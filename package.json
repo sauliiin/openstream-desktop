@@ -1,0 +1,60 @@
+{
+  "name": "openstream-desktop",
+  "version": "1.0.0",
+  "description": "Open Stream — app de desktop (Windows .exe e Linux .AppImage) para as suas listas do mdblist.",
+  "main": "electron/main.js",
+  "private": true,
+  "license": "MIT",
+  "author": "Saulo Hugo Rossi",
+  "scripts": {
+    "build:web": "cd web && npm install && npm run build && cd .. && node scripts/copy-web-build.js",
+    "start": "npm run build:web && electron .",
+    "dist:linux": "npm run build:web && electron-builder --linux AppImage",
+    "dist:win": "npm run build:web && electron-builder --win nsis",
+    "dist": "npm run build:web && electron-builder --linux AppImage --win nsis"
+  },
+  "devDependencies": {
+    "electron": "^43.4.0",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "com.sauliiin.openstream",
+    "productName": "Open Stream",
+    "copyright": "Copyright © Saulo Hugo Rossi",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "electron/**/*",
+      "app/**/*",
+      "package.json"
+    ],
+    "icon": "build/icon.png",
+    "linux": {
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": ["x64"]
+        }
+      ],
+      "category": "AudioVideo",
+      "icon": "build/icon.png"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "build/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
+  }
+}
