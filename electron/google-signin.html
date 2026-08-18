@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Open Stream — Sign in with Google</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { color-scheme: dark; }
+  body {
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: #07080c;
+    color: #f4f4f5;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100vh;
+    margin: 0;
+  }
+  .card { text-align: center; max-width: 320px; }
+  h1 { font-size: 18px; margin: 0 0 20px; }
+  #g_id_signin { display: flex; justify-content: center; margin-bottom: 16px; }
+  #status { color: #a1a1aa; font-size: 14px; }
+  #status.error { color: #f87171; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>Sign in with Google to link Open Stream</h1>
+    <div id="g_id_signin"></div>
+    <div id="status">Choose an account above.</div>
+  </div>
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <script>
+    // Same OAuth Web client the desktop and web apps already use — see
+    // README's "Login com Google" section.
+    var CLIENT_ID = '862741916290-5bhenqt1prf98341g2douaedchkqv3nb.apps.googleusercontent.com';
+    var statusEl = document.getElementById('status');
+
+    function setStatus(text, isError) {
+      statusEl.textContent = text;
+      statusEl.className = isError ? 'error' : '';
+    }
+
+    function onCredential(response) {
+      setStatus('Signing in…');
+      fetch('/google-callback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ credential: response.credential }),
+      })
+        .then(function (res) {
+          if (!res.ok) throw new Error('callback failed');
+          setStatus('Done — you can close this tab and return to Open Stream.');
+        })
+        .catch(function () {
+          setStatus('Could not reach Open Stream. Go back to the app and try again.', true);
+        });
+    }
+
+    window.addEventListener('load', function () {
+      if (!window.google || !window.google.accounts) {
+        setStatus('Could not load Google Identity Services. Check your connection and reload this page.', true);
+        return;
+      }
+      google.accounts.id.initialize({ client_id: CLIENT_ID, callback: onCredential });
+      google.accounts.id.renderButton(
+        document.getElementById('g_id_signin'),
+        { theme: 'filled_black', size: 'large', text: 'continue_with' },
+      );
+      // Best-effort One Tap too — falls back silently to the button above if
+      // there's no session or FedCM isn't available.
+      google.accounts.id.prompt();
+    });
+  </script>
+</body>
+</html>

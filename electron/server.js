@@ -46,10 +46,38 @@ function serveFile(filePath, res) {
  */
 const FIXED_PORT = 47311;
 
-function startServer(rootDir, port = FIXED_PORT) {
+function startServer(rootDir, { port = FIXED_PORT, onGoogleCredential } = {}) {
   return new Promise((resolve, reject) => {
     const server = http.createServer((req, res) => {
       const urlPath = decodeURIComponent((req.url || '/').split('?')[0]);
+
+      // Served from electron/, not rootDir: it's the system-browser page for
+      // Google sign-in, not part of the Angular app — see main.js.
+      if (req.method === 'GET' && urlPath === '/google-signin.html') {
+        serveFile(path.join(__dirname, 'google-signin.html'), res);
+        return;
+      }
+
+      if (req.method === 'POST' && urlPath === '/google-callback') {
+        let body = '';
+        req.on('data', (chunk) => {
+          body += chunk;
+        });
+        req.on('end', () => {
+          try {
+            const { credential } = JSON.parse(body);
+            if (!credential) throw new Error('missing credential');
+            onGoogleCredential?.(credential);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: true }));
+          } catch {
+            res.writeHead(400);
+            res.end('Bad request');
+          }
+        });
+        return;
+      }
+
       const filePath = path.normalize(path.join(rootDir, urlPath));
 
       if (!filePath.startsWith(rootDir)) {
