@@ -36,7 +36,17 @@ function serveFile(filePath, res) {
   stream.pipe(res);
 }
 
-function startServer(rootDir) {
+/**
+ * Fixed, non-standard port (not 0/random). Google Identity Services checks
+ * the page's origin against the OAuth client's "Authorized JavaScript
+ * origins" in Google Cloud Console — an origin that changes on every launch
+ * could never be registered there, so the sign-in prompt would hang forever
+ * on "Connecting...". See README's "Login com Google" section for the
+ * origin that needs to be registered.
+ */
+const FIXED_PORT = 47311;
+
+function startServer(rootDir, port = FIXED_PORT) {
   return new Promise((resolve, reject) => {
     const server = http.createServer((req, res) => {
       const urlPath = decodeURIComponent((req.url || '/').split('?')[0]);
@@ -58,8 +68,8 @@ function startServer(rootDir) {
     });
 
     server.on('error', reject);
-    server.listen(0, '127.0.0.1', () => resolve(server));
+    server.listen(port, '127.0.0.1', () => resolve(server));
   });
 }
 
-module.exports = { startServer };
+module.exports = { startServer, FIXED_PORT };

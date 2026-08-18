@@ -7,7 +7,13 @@ let server;
 
 async function createWindow() {
   const appDir = path.join(__dirname, '..', 'app');
-  server = await startServer(appDir);
+  try {
+    server = await startServer(appDir);
+  } catch {
+    // Fixed port taken by something else — fall back to a random one. The
+    // app still works, just without Google sign-in (see server.js).
+    server = await startServer(appDir, 0);
+  }
   const { port } = server.address();
 
   mainWindow = new BrowserWindow({

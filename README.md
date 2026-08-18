@@ -71,6 +71,30 @@ git commit -m "chore: atualiza submódulo web"
 Isso só atualiza qual commit do mdblist-hub o app aponta — o build em si
 acontece em `npm run build:web` / `npm start` / `npm run dist:*`.
 
+## Login com Google
+
+O botão "Sign in with your account" usa Google Identity Services
+(`google-auth.service.ts` no submódulo `web`), que só libera o fluxo para
+origens cadastradas em **Authorized JavaScript origins** do OAuth Client no
+Google Cloud Console — senão o prompt fica travado em "Connecting..." pra
+sempre, sem erro nenhum.
+
+Por isso `electron/server.js` serve o app numa porta fixa
+(`127.0.0.1:47311`, ver `FIXED_PORT`) em vez de uma porta aleatória — uma
+porta aleatória nunca poderia ser cadastrada. Pra esse login funcionar no
+app desktop, cadastre essa origem uma vez:
+
+1. [console.cloud.google.com](https://console.cloud.google.com/apis/credentials),
+   projeto do Firebase `safevault-fcbdc` (o mesmo do app de TV/celular).
+2. Abra o OAuth 2.0 Client ID
+   `862741916290-5bhenqt1prf98341g2douaedchkqv3nb.apps.googleusercontent.com`.
+3. Em **Authorized JavaScript origins**, adicione `http://127.0.0.1:47311`.
+4. Salve — não precisa rebuildar o app, o Google aplica na hora.
+
+Sem isso, o app ainda funciona normalmente com "Continue as Guest" ou
+colando a chave da API do mdblist direto — só a sincronização de
+preferências entre aparelhos via conta Google fica indisponível.
+
 ## Estrutura
 
 ```
