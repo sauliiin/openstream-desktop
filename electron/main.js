@@ -62,6 +62,14 @@ async function createWindow() {
       nodeIntegration: false,
       sandbox: true,
       preload: path.join(__dirname, 'preload.js'),
+      // O Chromium estrangula timers de janela em segundo plano até no
+      // máximo um disparo por minuto. O heartbeat que mantém o ponto de
+      // "continuar assistindo" atualizado no mdblist roda exatamente a cada
+      // 60s (`HEARTBEAT` em `video-player.ts`), ou seja, em cima da linha —
+      // então alt-tabear durante o filme fazia o ponto salvo atrasar ou
+      // pular batidas. Num app cuja janela em segundo plano continua tocando
+      // vídeo, estrangular timer não economiza nada que valha isso.
+      backgroundThrottling: false,
     },
   });
 

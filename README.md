@@ -1,8 +1,12 @@
-# Open Stream Desktop
+# OmniStream Desktop
 
-App de desktop do [Open Stream](https://openstream.com.br/) — mesmo site,
+App de desktop do [OmniStream](https://openstream.com.br/) — mesmo site,
 empacotado com [Electron](https://www.electronjs.org/) para rodar como
 aplicativo nativo no Windows (`.exe`) e no Linux (`.AppImage`).
+
+A versão 1.1 acompanha o app de TV com as aparências CyberFlix e
+OptimusPrime, Autotrailer no destaque, reset de progresso e a identidade
+OmniStream em toda a interface.
 
 O código do site fica no submódulo `web/` (repo
 [mdblist-hub](https://github.com/sauliiin/mdblist-hub)). Este repositório só
@@ -51,8 +55,8 @@ release faz); gerar sob Linux exige Wine e não é garantido pelo
 `vX.Y.Z` é enviada:
 
 ```bash
-git tag v1.0.0
-git push origin v1.0.0
+git tag v1.1.2
+git push origin v1.1.2
 ```
 
 Também dá pra disparar manualmente pela aba Actions (`workflow_dispatch`).

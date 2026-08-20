@@ -33,7 +33,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: openstream-desktop-${{ matrix.os }}
+          name: omnistream-desktop-${{ matrix.os }}
           path: ${{ matrix.artifact-glob }}
 
       - if: startsWith(github.ref, 'refs/tags/')
