@@ -1,0 +1,538 @@
+package com.mdblisthub.tv.core.ui.component
+
+import androidx.compose.animation.Crossfade
+import com.mdblisthub.desktop.ui.collectIsFocusedOrHoveredAsState
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.asSkiaPath
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Outline
+import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.tv.material3.MaterialTheme
+import androidx.tv.material3.Text
+import coil3.compose.AsyncImage
+import com.mdblisthub.tv.core.model.MediaItem
+import com.mdblisthub.tv.core.ui.theme.HubColors
+import com.mdblisthub.tv.core.ui.theme.HubDimens
+import com.mdblisthub.tv.core.ui.theme.HubMotion
+import com.mdblisthub.tv.core.ui.theme.HubShapes
+import kotlinx.coroutines.delay
+
+/**
+ * One title in a row.
+ *
+ * Focus is expressed two ways at once — an accent border and a brightening
+ * title, no scale — because on a television the viewer is metres away and a
+ * single cue is easy to lose. A per-theme zoom was tried (including one
+ * scoped to just Netflixy) and dropped both times: it fought the grid's own
+ * spacing (a scaled-up card overlaps its neighbours) and read as restless
+ * when moving quickly through a row; the border alone is enough.
+ */
+@Composable
+fun PosterCard(
+    item: MediaItem,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    initialFocusRequester: FocusRequester? = null,
+    onFocused: (MediaItem) -> Unit = {},
+    progressPercent: Float? = null,
+    /**
+     * Held OK, the one secondary gesture a remote has. Null leaves the card
+     * with a plain click, which is what every row but "continue watching"
+     * wants — a card that reacts to being held without doing anything is
+     * worse than one that does not react at all.
+     */
+    onLongClick: (() -> Unit)? = null,
+    isWatched: Boolean = false,
+    /**
+     * Lets a shelf card become a landscape preview after focus settles.
+     * Its height never changes, so the row remains stable; only the width is
+     * animated, which is what produces the gentle slide of neighbouring cards.
+     */
+    expandOnFocus: Boolean = false,
+    /**
+     * When non-null, replaces the dwell timer with an external event. The
+     * home screen uses the trailer player's first rendered frame here, so the
+     * poster and the video change shape at the same perceptible instant.
+     */
+    expansionTrigger: Boolean? = null,
+    expansionDelayMillis: Long = HubMotion.FocusedCardDelayMillis,
+    /**
+     * False when the row paints a fixed focus frame of its own (Primefly) —
+     * the card then only brightens its title and leaves the ring to the row.
+     */
+    drawFocusBorder: Boolean = true,
+    /**
+     * Told the artwork's width, frame by frame, for as long as this card holds
+     * focus — the row's fixed focus frame follows it as a poster widens into
+     * its landscape preview.
+     */
+    onFocusedArtworkWidth: ((Dp) -> Unit)? = null,
+) {
+    val interaction = remember { MutableInteractionSource() }
+    val focused by interaction.collectIsFocusedAsState()
+    // Desktop: the mouse pointer highlights a card like focus does, but only
+    // focus expands it, scrolls the row or retitles the hero.
+    val highlighted by interaction.collectIsFocusedOrHoveredAsState()
+    val canExpand = expandOnFocus && !HubColors.isPrimefly
+    var backdropExpanded by remember(item.key) { mutableStateOf(false) }
+
+    LaunchedEffect(focused, canExpand, item.key, expansionTrigger, expansionDelayMillis) {
+        if (!focused || !canExpand) {
+            backdropExpanded = false
+            return@LaunchedEffect
+        }
+
+        if (expansionTrigger != null) {
+            backdropExpanded = expansionTrigger
+            return@LaunchedEffect
+        }
+
+        delay(expansionDelayMillis)
+        if (focused) backdropExpanded = true
+    }
+
+    val expandedWidth = HubDimens.PosterHeight * (16f / 9f)
+    val animatedWidth by animateDpAsState(
+        targetValue = if (backdropExpanded) expandedWidth else HubDimens.PosterWidth,
+        animationSpec = tween(HubMotion.Content, easing = HubMotion.StandardEasing),
+        label = "poster-preview-width",
+    )
+    LaunchedEffect(focused, onFocusedArtworkWidth) {
+        val report = onFocusedArtworkWidth
+        if (focused && report != null) snapshotFlow { animatedWidth }.collect { report(it) }
+    }
+    val targetBorderWidth = if (highlighted && drawFocusBorder) {
+        if (HubColors.isCyberpunk) 4.5.dp else 2.5.dp
+    } else 0.dp
+    val borderWidth by animateDpAsState(
+        targetValue = targetBorderWidth,
+        animationSpec = posterFocusTween(),
+        label = "poster-border-width",
+    )
+    val borderColor by animateColorAsState(
+        targetValue = if (highlighted) HubColors.Accent else HubColors.Border,
+        animationSpec = posterFocusTween(),
+        label = "poster-border-color",
+    )
+    val titleColor by animateColorAsState(
+        targetValue = if (highlighted) HubColors.Text else HubColors.TextDim,
+        animationSpec = posterFocusTween(),
+        label = "poster-title-color",
+    )
+    val cardArtworkLoader = LocalCardArtworkLoader.current
+    // Every theme reads this now: besides Primefly's landscape art it carries
+    // the title and poster in the interface language (English as fallback),
+    // which lists and addons almost always hand out in English only. Each
+    // card subscribes to its own slot alone — see `HubNavHost`.
+    val resolvedArtwork = cardArtworkLoader.artworkFor(item)
+
+    // LazyRow only composes the visible cards (plus its small layout buffer),
+    // so composition is the precise signal to start every image on screen.
+    // Focus remains a navigation concern and no longer gates artwork. The
+    // loader drops repeats, and a title already in Room answers without a
+    // request.
+    LaunchedEffect(item.key) {
+        if (resolvedArtwork == null) cardArtworkLoader.request(item)
+    }
+
+    val baseTitle = resolvedArtwork?.title?.takeUnless { item.titleIsLabel } ?: item.title
+    // Primefly and the Netflix-layout themes (Netflixy, CyberFlix) always show
+    // the year — though not after an Up Next "Série • T2 E5" label, where it
+    // would read as the episode's. Elsewhere it stays only if the source's own
+    // name carried it, so swapping in the localized name never drops it.
+    val sourceHadYear = item.year != null && item.title.trimEnd().endsWith("(${item.year})")
+    val themeShowsYear = HubColors.isPrimefly || (HubColors.isNetflixLayout && !item.titleIsLabel)
+    val displayTitle = if ((themeShowsYear || sourceHadYear) && item.year != null &&
+        !baseTitle.endsWith("(${item.year})")
+    ) {
+        "$baseTitle (${item.year})"
+    } else {
+        baseTitle
+    }
+
+    LaunchedEffect(focused) {
+        if (focused) onFocused(item)
+    }
+
+    Column(
+        modifier = modifier.width(animatedWidth),
+        verticalArrangement = Arrangement.spacedBy(if (HubColors.isPrimefly) 4.dp else 8.dp),
+    ) {
+        val cornerRadius = HubShapes.ShelfCard
+        Box(
+            Modifier
+                .width(animatedWidth)
+                .height(HubDimens.PosterHeight)
+                .let {
+                    if (HubColors.isCyberpunk && focused) {
+                        it.animatedCyberpunkGlow(shape = RoundedCornerShape(cornerRadius))
+                    } else it
+                }
+                .clip(RoundedCornerShape(cornerRadius))
+                .background(HubColors.Surface)
+                .let {
+                    if (!HubColors.isCyberpunk || !focused) {
+                        it.border(width = borderWidth, color = borderColor, shape = RoundedCornerShape(cornerRadius))
+                    } else it
+                }
+                .let {
+                    if (initialFocusRequester != null) it.focusRequester(initialFocusRequester) else it
+                }
+                // `clickable` is what makes it focusable *and* what turns the
+                // remote's centre key into a click; adding `focusable` beside
+                // it would register two focus targets for one card.
+                .let { base ->
+                    if (onLongClick == null) {
+                        base.clickable(
+                            interactionSource = interaction,
+                            indication = null,
+                            onClick = onClick,
+                        )
+                    } else {
+                        base.combinedClickable(
+                            interactionSource = interaction,
+                            indication = null,
+                            onClick = onClick,
+                            onLongClick = onLongClick,
+                        )
+                    }
+                },
+        ) {
+            val posterUrl = resolvedArtwork?.posterUrl ?: item.posterUrl
+            val artworkUrl = if (backdropExpanded) {
+                resolvedArtwork?.landscapeUrl
+                    ?: item.landscapeUrl
+                    ?: resolvedArtwork?.backdropUrl
+                    ?: item.backdropUrl
+                    ?: posterUrl
+            } else if (HubColors.isPrimefly) {
+                // Never crop a portrait poster into a landscape card.
+                resolvedArtwork?.landscapeUrl
+                    ?: item.landscapeUrl
+                    ?: resolvedArtwork?.backdropUrl
+                    ?: item.backdropUrl
+            } else {
+                posterUrl
+            }
+            Crossfade(
+                targetState = artworkUrl,
+                animationSpec = tween(HubMotion.Content, easing = HubMotion.StandardEasing),
+                label = "poster-preview-artwork",
+                modifier = Modifier.fillMaxSize(),
+            ) { url ->
+                if (url != null) {
+                    AsyncImage(
+                        model = url,
+                        contentDescription = displayTitle,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                } else {
+                    // No poster is common on obscure titles; a readable fallback
+                    // beats an empty rectangle the eye reads as a loading error.
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text(
+                            text = displayTitle,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = HubColors.TextFaint,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.padding(10.dp),
+                        )
+                    }
+                }
+            }
+
+            val watched = progressPercent?.coerceIn(0f, 100f)?.takeIf { it > 0f }
+            item.score?.takeIf { it > 0 }?.let { score ->
+                ScoreBadge(
+                    score = score,
+                    modifier = Modifier.align(Alignment.BottomStart).padding(
+                        start = if (HubColors.isCyberpunk) 0.dp else 6.dp,
+                        end = if (HubColors.isCyberpunk) 0.dp else 6.dp,
+                        top = if (HubColors.isCyberpunk) 0.dp else 6.dp,
+                        bottom = when {
+                            HubColors.isCyberpunk -> 0.dp
+                            watched != null -> 18.dp
+                            else -> 6.dp
+                        },
+                    ),
+                )
+            }
+
+
+            if (isWatched) {
+                WatchedBadge(
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(
+                            end = if (HubColors.isCyberpunk) 4.dp else 8.dp,
+                            bottom = when {
+                                HubColors.isCyberpunk && watched != null -> 20.dp
+                                HubColors.isCyberpunk -> 4.dp
+                                watched != null -> 20.dp
+                                else -> 8.dp
+                            }
+                        ),
+                    size = 16.dp
+                )
+            }
+
+            watched?.let { progress ->
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(
+                            start = if (HubColors.isCyberpunk && item.score?.let { it > 0 } == true) 36.dp else 8.dp,
+                            end = 8.dp,
+                            top = 8.dp,
+                            bottom = 8.dp,
+                        )
+                        .fillMaxWidth()
+                        .height(4.dp)
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(HubColors.Text.copy(alpha = 0.32f)),
+                ) {
+                    Box(
+                        Modifier
+                            .fillMaxWidth(progress / 100f)
+                            .height(4.dp)
+                            .clip(RoundedCornerShape(2.dp))
+                            .background(HubColors.Accent),
+                    )
+                }
+            }
+        }
+
+        Text(
+            // The preview widens only the artwork. Identity stays in the same
+            // fixed poster column below it, so the title never jumps into the
+            // image or travels with the landscape width.
+            text = displayTitle,
+            style = if (HubColors.isCyberpunk) {
+                MaterialTheme.typography.labelSmall
+            } else {
+                MaterialTheme.typography.labelLarge
+            },
+            color = titleColor,
+            minLines = 2,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.width(HubDimens.PosterWidth),
+        )
+    }
+}
+
+/** Shared by every focus-driven property on the card, so they move as one. */
+private fun <T> posterFocusTween() = tween<T>(durationMillis = 200, easing = FastOutSlowInEasing)
+
+/**
+ * Hoisted out of [ScoreBadge]: `forLanguageTag` parses the tag every call, and
+ * the badge is drawn once per visible card in every row on the home screen.
+ */
+private val ScoreLocale: java.util.Locale = java.util.Locale.forLanguageTag("pt-BR")
+
+@Composable
+private fun ScoreBadge(score: Int, modifier: Modifier = Modifier) {
+    val cornerRadius = if (HubColors.isCyberpunk) 0.dp else 6.dp
+    Box(
+        modifier
+            .size(
+                width = if (HubColors.isCyberpunk) 32.dp else 40.dp,
+                height = if (HubColors.isCyberpunk) 18.dp else 22.dp,
+            )
+            .clip(RoundedCornerShape(cornerRadius))
+            .background(
+                Brush.verticalGradient(
+                    listOf(HubColors.Background.copy(alpha = 0.85f), HubColors.Background)
+                )
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = remember(score) { String.format(ScoreLocale, "%.1f", score / 10.0) },
+            style = if (HubColors.isCyberpunk) {
+                MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp)
+            } else {
+                MaterialTheme.typography.labelSmall
+            },
+            color = HubColors.Imdb,
+        )
+    }
+}
+
+/**
+ * The sweep's colours, as packed ARGB ints.
+ *
+ * Hoisted because these used to be three `Color.parseColor("#…")` calls
+ * *inside* the draw — three string parses per frame, sixty times a second,
+ * for a value that has never changed.
+ */
+/** Skia form of [CyberpunkGlowColors], built once. */
+private val CyberpunkGlowGradient by lazy {
+    org.jetbrains.skia.Gradient(
+        org.jetbrains.skia.Gradient.Colors(
+            colors = CyberpunkGlowColors.map { org.jetbrains.skia.Color4f(it) }.toTypedArray(),
+            positions = null,
+            tileMode = org.jetbrains.skia.FilterTileMode.CLAMP,
+        ),
+    )
+}
+
+private val CyberpunkGlowColors = intArrayOf(
+    0xFF9D00FF.toInt(),
+    0xFF00F3FF.toInt(),
+    0xFF9D00FF.toInt(),
+)
+
+/**
+ * The rotating neon halo the cyberpunk theme puts behind a focused card.
+ *
+ * Everything expensive — the shader, the two blur filters, the three paints
+ * and the shape's outline — is built once per size in [drawWithCache] and
+ * then reused; only the rotation changes per frame, and it is applied by
+ * mutating the shader's local matrix in place. A focused card therefore costs
+ * no allocations per frame, where it used to cost ten: a `SweepGradient`, a
+ * `Matrix`, three `Paint`s, two `BlurMaskFilter`s and three parsed colour
+ * strings, all discarded sixty times a second on a box whose GC has very
+ * little headroom to spare.
+ *
+ * `@Composable` rather than `composed { }` for a related reason: `composed`
+ * is opaque to Compose's modifier comparison, so it re-materialises on every
+ * recomposition of every card using it.
+ *
+ * The paints are `android.graphics.Paint` directly rather than Compose paints
+ * unwrapped with `asFrameworkPaint()`, which is deprecated — the draw was
+ * already going through `nativeCanvas` for the rounded case, so this only
+ * makes the other two branches agree with it.
+ */
+@Composable
+fun Modifier.animatedCyberpunkGlow(shape: Shape = RectangleShape): Modifier {
+    val infiniteTransition = rememberInfiniteTransition(label = "glow_rot")
+    // Deliberately not delegated with `by`: a delegated read would happen
+    // inside the cache block below and invalidate it every frame, rebuilding
+    // precisely the objects the cache exists to keep. It is read in the draw
+    // instead, which is the only place it changes anything.
+    val rotation = infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(3000, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart,
+        ),
+        label = "glow_rot_anim",
+    )
+
+    return this.drawWithCache {
+        val centerX = size.width / 2f
+        val centerY = size.height / 2f
+        // Skia (desktop) port of the TV's framework-Paint glow. Android's blur
+        // radius maps to a Skia sigma by r * 0.57735 + 0.5.
+        fun sigma(radius: Float) = radius * 0.57735f + 0.5f
+        val paints = arrayOf(
+            org.jetbrains.skia.Paint().apply {
+                isAntiAlias = true
+                maskFilter = org.jetbrains.skia.MaskFilter.makeBlur(
+                    org.jetbrains.skia.FilterBlurMode.NORMAL, sigma(16.dp.toPx() * 1.5f),
+                )
+            },
+            org.jetbrains.skia.Paint().apply {
+                isAntiAlias = true
+                maskFilter = org.jetbrains.skia.MaskFilter.makeBlur(
+                    org.jetbrains.skia.FilterBlurMode.NORMAL, sigma(16.dp.toPx() * 0.5f),
+                )
+            },
+            org.jetbrains.skia.Paint().apply {
+                isAntiAlias = true
+                mode = org.jetbrains.skia.PaintMode.STROKE
+                strokeWidth = 4.5.dp.toPx()
+            },
+        )
+        val outline = shape.createOutline(size, layoutDirection, this)
+
+        onDrawBehind {
+            // One shader behind all three paints: rotating it moves the outer
+            // halo, the inner bloom and the border as a single piece.
+            val shader = org.jetbrains.skia.Shader.makeSweepGradient(
+                centerX,
+                centerY,
+                CyberpunkGlowGradient,
+                org.jetbrains.skia.Matrix33.makeRotate(rotation.value, centerX, centerY),
+            )
+            for (paint in paints) paint.shader = shader
+
+            drawIntoCanvas { canvas ->
+                val native = canvas.nativeCanvas
+                when (outline) {
+                    is Outline.Rectangle -> {
+                        val r = outline.rect
+                        for (i in paints.indices) {
+                            native.drawRect(org.jetbrains.skia.Rect.makeLTRB(r.left, r.top, r.right, r.bottom), paints[i])
+                        }
+                    }
+                    is Outline.Rounded -> {
+                        val r = outline.roundRect
+                        for (i in paints.indices) {
+                            native.drawRRect(
+                                org.jetbrains.skia.RRect.makeLTRB(
+                                    r.left, r.top, r.right, r.bottom,
+                                    r.bottomLeftCornerRadius.x, r.bottomLeftCornerRadius.y,
+                                ),
+                                paints[i],
+                            )
+                        }
+                    }
+                    is Outline.Generic -> {
+                        val p = outline.path.asSkiaPath()
+                        for (i in paints.indices) native.drawPath(p, paints[i])
+                    }
+                }
+            }
+        }
+    }
+}

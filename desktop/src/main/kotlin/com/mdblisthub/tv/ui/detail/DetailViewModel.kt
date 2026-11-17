@@ -1,0 +1,259 @@
+package com.mdblisthub.tv.ui.detail
+
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.mdblisthub.tv.core.data.DataGraph
+import com.mdblisthub.tv.core.model.AppError
+import com.mdblisthub.tv.core.model.AppException
+import com.mdblisthub.tv.core.model.CastMember
+import com.mdblisthub.tv.core.model.Episode
+import com.mdblisthub.tv.core.model.LibraryBucket
+import com.mdblisthub.tv.core.model.MediaDetail
+import com.mdblisthub.tv.core.model.MediaItem
+import com.mdblisthub.tv.core.model.MediaType
+import com.mdblisthub.tv.core.model.PersonSummary
+import com.mdblisthub.tv.core.model.ResumePoint
+import com.mdblisthub.tv.core.model.ScrobbleTarget
+import com.mdblisthub.tv.core.model.WikipediaLookup
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+
+/** Which of the three mdblist buckets this title sits in, right now. */
+data class LibraryState(
+    val watchlist: Boolean = false,
+    val collection: Boolean = false,
+    val watched: Boolean = false,
+) {
+    operator fun get(bucket: LibraryBucket): Boolean = when (bucket) {
+        LibraryBucket.WATCHLIST -> watchlist
+        LibraryBucket.COLLECTION -> collection
+        LibraryBucket.WATCHED -> watched
+    }
+}
+
+/** What the cast popup shows — `member` doubles as "is it open at all". */
+data class CastBioState(
+    val member: CastMember? = null,
+    val loading: Boolean = false,
+    val summary: PersonSummary? = null,
+    val error: String? = null,
+)
+
+@OptIn(ExperimentalCoroutinesApi::class)
+class DetailViewModel(
+    private val graph: DataGraph,
+    private val type: MediaType,
+    private val tmdbId: Int,
+) : ViewModel() {
+
+    val detail: StateFlow<MediaDetail?> = graph.media.observeDetail(type, tmdbId)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    /**
+     * The app's own language setting — the same one `SettingsScreen` reads —
+     * not the device's. `LocalConfiguration` is supposed to carry this same
+     * override down through the whole tree, but on this screen it does not:
+     * every other string on it renders in English even with "Português"
+     * selected, so a date formatted off `LocalConfiguration` would have
+     * inherited that same bug. Reading the preference directly here
+     * sidesteps whatever is broken in that chain instead of also going wrong
+     * in a *new* way.
+     */
+    val language: StateFlow<String> = graph.uiPreferences.language
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), "en")
+
+    val dimUnwatchedEpisodes: StateFlow<Boolean> = graph.uiPreferences.dimUnwatchedEpisodes
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+
+    private val _season = MutableStateFlow(1)
+    val season: StateFlow<Int> = _season.asStateFlow()
+
+    val episodes: StateFlow<List<Episode>> = _season
+        .flatMapLatest { graph.media.observeEpisodes(tmdbId, it) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    val watchedEpisodes: StateFlow<Set<String>> = graph.library.observeWatchedEpisodes()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptySet())
+
+    val watchedIds: StateFlow<Set<Int>> = graph.library.observeBucket(LibraryBucket.WATCHED)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptySet())
+
+    /**
+     * Whole-title membership across all three buckets. A show's "watched"
+     * marks the series, the same as the web build — mdblist has no
+     * per-episode bucket, only scrobbling, which is what actually playing an
+     * episode already reports.
+     */
+    val library: StateFlow<LibraryState> = combine(
+        graph.library.observeMembership(LibraryBucket.WATCHLIST, tmdbId),
+        graph.library.observeMembership(LibraryBucket.COLLECTION, tmdbId),
+        graph.library.observeMembership(LibraryBucket.WATCHED, tmdbId),
+    ) { watchlist, collection, watched -> LibraryState(watchlist, collection, watched) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), LibraryState())
+
+    val resumePoint: StateFlow<ResumePoint?> = combine(
+        graph.playback.resumePoints,
+        detail,
+    ) { points, currentDetail ->
+        points.firstOrNull { pt ->
+            pt.type == type && (
+                (tmdbId > 0 && pt.tmdbId == tmdbId) ||
+                (currentDetail?.imdbId != null && pt.imdbId == currentDetail.imdbId)
+            )
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    /** Which bucket has a write in flight, so its own button disables. */
+    private val _pending = MutableStateFlow<Set<LibraryBucket>>(emptySet())
+    val pending: StateFlow<Set<LibraryBucket>> = _pending.asStateFlow()
+
+    private val _libraryError = MutableStateFlow<AppError?>(null)
+    val libraryError: StateFlow<AppError?> = _libraryError.asStateFlow()
+
+    private val _abandoning = MutableStateFlow(false)
+    val abandoning: StateFlow<Boolean> = _abandoning.asStateFlow()
+
+    private val _castBio = MutableStateFlow(CastBioState())
+    val castBio: StateFlow<CastBioState> = _castBio.asStateFlow()
+
+    init {
+        viewModelScope.launch {
+            // Usually a no-op: the card's focus already warmed this before the
+            // user pressed OK, so the screen paints from Room straight away.
+            graph.media.ensureCompleteDetail(type, tmdbId)
+            if (type == MediaType.SHOW) graph.media.ensureEpisodes(tmdbId, 1)
+            graph.library.refresh(LibraryBucket.WATCHLIST)
+            graph.library.refresh(LibraryBucket.COLLECTION)
+            graph.library.refresh(LibraryBucket.WATCHED)
+        }
+    }
+
+    fun selectSeason(number: Int) {
+        _season.value = number
+        viewModelScope.launch { graph.media.ensureEpisodes(tmdbId, number) }
+    }
+
+    fun toggleWatchlist() = toggleBucket(LibraryBucket.WATCHLIST)
+    fun toggleCollection() = toggleBucket(LibraryBucket.COLLECTION)
+    fun toggleWatched() = toggleBucket(LibraryBucket.WATCHED)
+
+    fun setWatched(item: MediaItem, watched: Boolean) {
+        if (item.tmdbId <= 0) return
+        viewModelScope.launch {
+            val result = graph.library.toggle(
+                LibraryBucket.WATCHED,
+                item.type,
+                item.tmdbId,
+                item.imdbId,
+                add = watched,
+            )
+            if (result.isSuccess && watched) {
+                graph.playback.clear(
+                    ScrobbleTarget(item.type, item.tmdbId, item.imdbId),
+                )
+            }
+        }
+    }
+
+    fun clearProgress() {
+        val point = resumePoint.value ?: return
+        viewModelScope.launch {
+            graph.playback.clear(point.toTarget())
+        }
+    }
+
+    fun abandonSeries() {
+        if (type != MediaType.SHOW || _abandoning.value) return
+        val current = detail.value ?: return
+        _libraryError.value = null
+        _abandoning.value = true
+
+        viewModelScope.launch {
+            try {
+                graph.library.abandonSeries(tmdbId, current.imdbId)
+                    .onSuccess {
+                        graph.homeFeeds.dismissFromUpNext(tmdbId, current.imdbId)
+                        graph.playback.clearSeriesProgress(
+                            ScrobbleTarget(MediaType.SHOW, tmdbId, current.imdbId),
+                        )
+                    }
+                    .onFailure { failure ->
+                        _libraryError.value =
+                            (failure as? AppException)?.error ?: AppError.Unexpected
+                    }
+            } finally {
+                _abandoning.value = false
+            }
+        }
+    }
+
+    private fun toggleBucket(bucket: LibraryBucket) {
+        val current = detail.value ?: return
+        if (bucket in _pending.value) return
+
+        val add = !library.value[bucket]
+        _libraryError.value = null
+        _pending.update { it + bucket }
+
+        viewModelScope.launch {
+            graph.library.toggle(bucket, type, tmdbId, current.imdbId, add)
+                .onFailure { failure ->
+                    _libraryError.value = (failure as? AppException)?.error ?: AppError.Unexpected
+                }
+            _pending.update { it - bucket }
+        }
+    }
+
+    /**
+     * Opens the popup immediately, in a loading state, then fills it in once
+     * Wikipedia (or its TMDB fallback) answers — the credit already carries
+     * both the name and the TMDB person id, so there is nothing faster to
+     * show first.
+     */
+    fun openCast(member: CastMember) {
+        _castBio.value = CastBioState(member = member, loading = true)
+        viewModelScope.launch {
+            val result = graph.wikipedia.summaryFor(
+                personId = member.id,
+                name = member.name,
+                // What turns "is 49 years old" into "and was 32 when the film
+                // premiered". Null while the detail is still loading, which
+                // only costs the second clause.
+                releaseDate = detail.value?.releaseDate,
+                isSeries = type == MediaType.SHOW,
+            )
+            _castBio.update {
+                // The popup may have been closed, or another member opened,
+                // while this was in flight — a stale answer should not
+                // reopen it or overwrite what is showing now.
+                if (it.member?.id != member.id) return@update it
+                when (result) {
+                    is WikipediaLookup.Found -> it.copy(loading = false, summary = result.summary, error = null)
+                    is WikipediaLookup.NotFound -> it.copy(
+                        loading = false,
+                        summary = null,
+                        // Reached only once both Wikipedia and its TMDB
+                        // fallback have nothing — the reason itself is not
+                        // shown, just logged (see WikipediaRepository), since
+                        // a real failure (network, parsing) and an actor who
+                        // genuinely has no bio anywhere both read the same
+                        // to the person looking at the popup.
+                        error = "WIKIPEDIA_NOT_FOUND",
+                    )
+                }
+            }
+        }
+    }
+
+    fun closeCast() {
+        _castBio.value = CastBioState()
+    }
+}

@@ -1,5 +1,22 @@
-node_modules/
-app/
-release/
+# Gradle / Kotlin
+.gradle/
+.kotlin/
+build/
+bin/
 *.log
 .DS_Store
+
+# Packaging output and downloaded tools
+release/
+.tools/
+
+# API keys (see README) — never committed
+local.properties
+
+# Left over from the Electron version (the web/ submodule is no longer used)
+node_modules/
+app/
+web/
+
+# libmpv for the Windows build, downloaded by CI
+desktop/packaging/resources/windows/*.dll

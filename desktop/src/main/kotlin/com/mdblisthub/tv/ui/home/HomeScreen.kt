@@ -1,0 +1,2632 @@
+package com.mdblisthub.tv.ui.home
+
+import androidx.compose.ui.draw.clipToBounds
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import com.mdblisthub.tv.core.ui.component.LocalRowFocusNeighbors
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.async
+import androidx.compose.runtime.MutableState
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
+import androidx.compose.foundation.verticalScroll
+
+import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.core.AnimationSpec
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.ui.util.lerp
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
+import androidx.compose.foundation.focusGroup
+import androidx.compose.foundation.gestures.BringIntoViewSpec
+import androidx.compose.foundation.gestures.LocalBringIntoViewSpec
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.automirrored.filled.ViewList
+import androidx.compose.material.icons.automirrored.filled.Logout
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.State
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.ExperimentalComposeUiApi
+import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.zIndex
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.ui.unit.dp
+import com.mdblisthub.desktop.ui.Dialog
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.tv.material3.Button
+import androidx.tv.material3.MaterialTheme
+import androidx.tv.material3.Text
+import androidx.compose.ui.res.stringResource
+import com.mdblisthub.tv.LocalHostActivity
+import com.mdblisthub.tv.R
+import com.mdblisthub.tv.core.data.DataGraph
+import com.mdblisthub.tv.core.model.MediaItem
+import com.mdblisthub.tv.core.model.MediaType
+import com.mdblisthub.tv.core.model.MediaList
+import com.mdblisthub.tv.core.model.MdblistHomeFeed
+import com.mdblisthub.tv.core.model.MdblistHomeFeedKeys
+import com.mdblisthub.tv.core.model.AddonCatalog
+import com.mdblisthub.tv.core.model.ResumePoint
+import com.mdblisthub.tv.core.ui.component.FanartBackdrop
+import com.mdblisthub.tv.core.ui.component.LoadingScreen
+import com.mdblisthub.tv.core.ui.component.MediaRow
+import com.mdblisthub.tv.core.ui.component.RailItem
+import com.mdblisthub.tv.core.ui.component.SideRail
+import com.mdblisthub.tv.core.ui.theme.HubColors
+import com.mdblisthub.tv.core.model.AddonCatalogItem
+import com.mdblisthub.tv.ui.component.AppClock
+import com.mdblisthub.tv.ui.component.alignment
+import com.mdblisthub.tv.core.ui.theme.HubDimens
+import com.mdblisthub.tv.core.ui.theme.HubMotion
+import com.mdblisthub.tv.core.model.MediaDetail
+import com.mdblisthub.tv.core.model.HubThemeVariant
+import coil3.SingletonImageLoader
+import coil3.compose.AsyncImage
+import coil3.request.ImageRequest
+import com.mdblisthub.tv.ui.component.AnimatedOpenStreamTitle
+import com.mdblisthub.tv.ui.component.HubButton
+import com.mdblisthub.tv.ui.component.MediaOptionsDialog
+import com.mdblisthub.tv.ui.component.formatAirDate
+import com.mdblisthub.tv.ui.component.formatReleaseDate
+import com.mdblisthub.tv.ui.component.runtimeLabel
+import com.mdblisthub.tv.ui.hubViewModel
+import com.mdblisthub.tv.ui.player.MiniPlayerCoordinator
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
+
+/** Where a focused row parks: 30% down the viewport, the same pivot Compose's own (internal) TV spec uses. */
+private const val ROW_PIVOT = 0.3f
+
+/**
+ * A Cyberpunk row heading's own height: `titleMedium` (17sp) plus the 6 dp
+ * gap before its poster strip (see `MediaRow`'s `Column` spacing). Landing a
+ * focused row exactly this far from the top is what puts its own heading
+ * flush against the viewport edge with nothing of the previous shelf
+ * showing — not a fragment of its title, not its posters, nothing.
+ *
+ * A fraction of the viewport was tried first and both directions of tuning
+ * it were wrong: too small a fraction cut the previous heading mid-glyph,
+ * and enlarging it revealed that heading's full text with its posters still
+ * clipped off beneath — a floating, image-less line of titles, worse than
+ * the fragment it replaced. A fraction can only approximate a fixed line
+ * height; this measures it directly instead.
+ */
+private val CYBERPUNK_ROW_HEADER_HEIGHT = 30.dp
+
+/** Rounding tolerance on the hero's bounds — not a widening of them. */
+private const val SUB_PIXEL_SLACK = 1f
+
+private sealed interface EditableListTarget {
+    val displayName: String
+
+    data class Mdblist(val list: MediaList) : EditableListTarget {
+        override val displayName: String get() = list.name
+    }
+
+    data class Stremio(val catalog: AddonCatalog) : EditableListTarget {
+        override val displayName: String get() = catalog.name
+    }
+
+    data class Feed(val feed: MdblistHomeFeed) : EditableListTarget {
+        override val displayName: String get() = feed.name
+    }
+}
+
+private data class HomeOptionTarget(
+    val item: MediaItem,
+    val season: Int? = null,
+    val episode: Int? = null,
+    val resumePoint: ResumePoint? = null,
+)
+
+/**
+ * How the column scrolls when focus moves between rows.
+ *
+ * Compose's default already animates — it is a `spring` — so the jerkiness
+ * was never a missing animation. It is that the default scrolls the *minimum*
+ * distance needed to reveal the row, so every row settles at whatever height
+ * happens to work out and each press travels a different amount. The eye
+ * reads that as stumbling rather than gliding.
+ *
+ * The fix is a fixed landing point. Compose ships exactly this as
+ * `PivotBringIntoViewSpec`, in its Android source set because it exists for
+ * televisions — but it is `internal`, so the geometry is restated here.
+ *
+ * A `scrollAnimationSpec` override here softening this had been added, then
+ * reverted, on the mistaken assumption that Compose's
+ * `@Deprecated("Animation spec customization is no longer supported")` meant
+ * the getter had gone dead. It has not — `ContentInViewNode` still reads it
+ * to build the `UpdatableAnimationState` that drives `bringChildIntoView`, at
+ * least as of the foundation build this project pins, which is exactly why
+ * NuvioTV's own `NuvioScrollDefaults.smoothScrollSpec` overrides the same
+ * property the same way. The values below match its spring
+ * (`dampingRatio = 0.95f`, `stiffness = 180f`) rather than this project's
+ * earlier, non-bouncy attempt: barely underdamped, so the row settles with a
+ * whisper of overshoot instead of stopping dead, and softer than
+ * `Spring.StiffnessLow` (200f). Only the landing point below stayed this
+ * project's own — Nuvio parks a row's *centre* at a fixed fraction of the
+ * viewport (`itemCenter - containerSize * 0.42f`), one pivot for every
+ * screen, where this one is a fixed pixel offset tuned per theme.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+private class RowPivotScroll(
+    private val variant: HubThemeVariant,
+    private val normalFirstRowOffsetPx: Float,
+    /**
+     * Cyberpunk's own version of [normalFirstRowOffsetPx]: the exact height
+     * of a row's own heading (`titleMedium`) plus the gap before its posters
+     * — see [CYBERPUNK_ROW_HEADER_HEIGHT]. Parking a focused row here, rather
+     * than at a fraction of the viewport, is what makes its own heading land
+     * flush with the top edge with nothing of the previous shelf showing,
+     * the same way [normalFirstRowOffsetPx] does for Normal.
+     */
+    private val cyberpunkRowOffsetPx: Float,
+    private val focusedShelfViewportHeightPx: Float,
+    /**
+     * True while focus is away on the side rail, and for a moment after it
+     * comes back. See [HomeScreen]'s `pinnedForRail` for why the pivot has to
+     * stand down for that window.
+     */
+    private val pinned: State<Boolean>,
+    /** True while the spotlight hero owns the viewport above the rows. */
+    private val spotlightHero: State<Boolean>,
+    /** True while the spotlight is fading out after focus entered a shelf. */
+    private val spotlightExitPending: State<Boolean>,
+    /**
+     * Answers "this request is for something inside the spotlight hero, and
+     * here is the scroll it actually wants" — or null when it is not, and the
+     * pivot below should decide. See the guard in [calculateScrollDistance].
+     */
+    private val heroScrollDistance: (offset: Float, size: Float) -> Float?,
+) : BringIntoViewSpec {
+    @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
+    override val scrollAnimationSpec: AnimationSpec<Float> = spring(
+        dampingRatio = 0.95f,
+        stiffness = 180f,
+    )
+
+    override fun calculateScrollDistance(offset: Float, size: Float, containerSize: Float): Float {
+        // Returning to the rows must not move them. The list did not scroll
+        // while the rail held focus, so the row focus is being restored to is
+        // still exactly where the user left it — every pixel this would scroll
+        // is a pixel of error, and it is what made the row look like it had
+        // jumped by one. Same trick, same reason, as `pinWhileOnButtons` in
+        // `DetailScreen`.
+        if (pinned.value) return 0f
+
+        // The spotlight hero has exactly one right resting place — the top
+        // of the list, where the whole of it is on screen — and the pivot
+        // cannot express that. The pivot knows only "park the focused child a
+        // fixed distance from the top", and the child here is a button near
+        // the hero's *bottom* edge; obeying it scrolled the artwork almost
+        // entirely off the moment focus landed on "Ver detalhes", which on a
+        // cold start is before the viewer has touched anything.
+        //
+        // Suppressing the scroll outright was the first fix and was wrong in
+        // the other direction: coming back *up* from the rows, the button
+        // being focused is above the viewport, so "don't scroll" left the
+        // hero showing as a sliver with focus on something invisible. The
+        // request has to be answered with the distance home, not with zero —
+        // zero is merely what that distance comes to when the list is already
+        // there.
+        //
+        // Geometry rather than a "hero has focus" flag on purpose: a flag has
+        // to be lowered by a focus callback that races the bring-into-view
+        // request it is meant to gate, and the first press of "down" out of
+        // the hero is exactly the moment that race decides whether the rows
+        // scroll at all.
+        heroScrollDistance(offset, size)?.let { return it }
+
+        val pivot = when {
+            // Netflixy and Primefly replace the full-height spotlight with a
+            // fixed hero above a short shelf viewport. During the spotlight's
+            // exit fade the list still measures at full height; using the
+            // ordinary spotlight pivot here briefly parked every card at the
+            // top of the screen, only for it to jump down when the synopsis
+            // hero appeared. Park the card at its final *screen* coordinate
+            // from the first frame so only the heroes crossfade.
+            spotlightHero.value &&
+                spotlightExitPending.value &&
+                focusedShelfViewportHeightPx > 0f -> {
+                val shelfPivotFraction = when (variant) {
+                    HubThemeVariant.PRIMEFLY,
+                    HubThemeVariant.OPTIMUS_PRIME -> 0.11f
+                    HubThemeVariant.NETFLIXY,
+                    HubThemeVariant.CYBERFLIX -> 0.18f
+                    else -> 0f
+                }
+                (containerSize - focusedShelfViewportHeightPx).coerceAtLeast(0f) +
+                    shelfPivotFraction * focusedShelfViewportHeightPx
+            }
+            // Under the spotlight hero every theme has the same geometry —
+            // one full-height list, hero first, rows after — so they all park
+            // a focused row in the same place. The per-variant landing points
+            // below were each measured against that theme's own fixed row
+            // strip, and none of those strips is on screen while the hero is.
+            //
+            // Cyberpunk is the one exception: its own row heading is short
+            // enough (titleMedium, not titleLarge) that the shared 36 dp
+            // offset lands mid-glyph through the *previous* shelf's title
+            // instead of past it, leaving a fragment of that heading on
+            // screen — never a full row, just torn text. It needs the same
+            // taller pivot here that it uses once the spotlight is gone.
+            spotlightHero.value && variant == HubThemeVariant.CYBERPUNK ->
+                cyberpunkRowOffsetPx
+            spotlightHero.value -> normalFirstRowOffsetPx
+            variant == HubThemeVariant.NORMAL -> normalFirstRowOffsetPx
+            // The focused child is the card, not the whole shelf. This offset
+            // equals the shelf heading plus its gap, so that heading lands at
+            // the viewport top and every preceding shelf remains clipped.
+            variant == HubThemeVariant.PRIMEFLY ||
+                variant == HubThemeVariant.OPTIMUS_PRIME -> 0.11f * containerSize
+            // CyberFlix rides with Netflixy: it shares the layout, so it has to
+            // share the pivot too. Left on the generic `ROW_PIVOT` below it
+            // parked rows lower, which in a viewport this short stopped the
+            // outgoing shelf halfway — its posters clipped off the top while
+            // its card labels stayed on screen, reading as a stray line of
+            // titles under the synopsis with nothing above them.
+            //
+            variant == HubThemeVariant.NETFLIXY ||
+                variant == HubThemeVariant.CYBERFLIX -> 0.18f * containerSize
+            // The row's own heading lands at the viewport top, exactly as
+            // it does for Primefly/Optimus Prime above — see
+            // [cyberpunkRowOffsetPx]. A fraction of the viewport (this
+            // branch's own previous shape) can only approximate that; a
+            // fixed offset matching the heading's actual measured height is
+            // what makes it exact regardless of screen size.
+            variant == HubThemeVariant.CYBERPUNK -> cyberpunkRowOffsetPx
+            else -> ROW_PIVOT * containerSize
+        }
+
+        // A row tall enough that parking it at the pivot would hang its
+        // bottom off-screen is aligned to the bottom edge instead — parking
+        // it would otherwise hide the very cards being brought into view.
+        val target = if (size <= containerSize && containerSize - pivot < size) {
+            containerSize - size
+        } else {
+            pivot
+        }
+
+        // The container clamps this at both ends, which is what keeps the
+        // hero panel visible at the top of the list: the first row wants to
+        // move *down* to reach the pivot, and there is nowhere to scroll.
+        return offset - target
+    }
+}
+
+// A row-level parallax was tried here and removed. It translated each shelf
+// toward the viewport's centre by a fraction of its distance from it, which
+// looks right in isolation and is wrong the moment two shelves are on screen:
+// neighbours converge, and the shelves are laid out only 6–14 dp apart, so a
+// row's card labels landed on top of the next row's heading. Sizing the effect
+// to fit inside that gap would have meant a couple of pixels of travel — not a
+// depth cue, just noise. Any future attempt has to move something *within* a
+// fixed-height row, not the row itself.
+
+@OptIn(ExperimentalFoundationApi::class, ExperimentalComposeUiApi::class)
+@Composable
+fun HomeScreen(
+    graph: DataGraph,
+    onOpenTitle: (MediaItem) -> Unit,
+    onOpenSearch: () -> Unit,
+    onOpenAddons: () -> Unit,
+    onOpenSettings: () -> Unit,
+    onResume: (ResumePoint) -> Unit,
+    onPlay: (MediaItem, Int?, Int?) -> Unit,
+    onChooseSource: (MediaItem, Int?, Int?) -> Unit,
+    onSignOut: () -> Unit,
+    /**
+     * Whether the trip away from Home was one that may have changed the rows
+     * — the app went to the background, or the viewer went somewhere other
+     * than a title or the search. Reading it clears it.
+     */
+    consumeForcedRefresh: () -> Boolean = { false },
+) {
+    val viewModel = hubViewModel { HomeViewModel(graph) }
+    val lists by viewModel.lists.collectAsStateWithLifecycle()
+    val allLists by viewModel.allLists.collectAsStateWithLifecycle()
+    val feeds by viewModel.feeds.collectAsStateWithLifecycle()
+    val allFeeds by viewModel.allFeeds.collectAsStateWithLifecycle()
+    val addonCatalogs by viewModel.addonCatalogs.collectAsStateWithLifecycle()
+    val allAddonCatalogs by viewModel.allAddonCatalogs.collectAsStateWithLifecycle()
+    val resumePoints by viewModel.resumePoints.collectAsStateWithLifecycle()
+    // `focused`, `focusedBackdropUrl` and `focusedDetail` are deliberately NOT
+    // collected here. Reading them at this level made this ~500-line composable
+    // the recomposition scope for every single card the D-pad passes over.
+    // `HeroPanel` and the backdrop collect them themselves, so the scope that
+    // invalidates is the one that actually displays the value.
+    val becauseYouWatched by viewModel.becauseYouWatched.collectAsStateWithLifecycle()
+    // The *list* is collected here — it changes once, when the query lands —
+    // while the item on screen and its detail are not: those turn over every
+    // `SPOTLIGHT_DWELL_MS`, and read at this level they would make this whole
+    // composable recompose on a timer. `SpotlightHeroBlock` collects them.
+    val spotlight by viewModel.spotlight.collectAsStateWithLifecycle()
+    val spotlightLoaded by viewModel.spotlightLoaded.collectAsStateWithLifecycle()
+    val spotlightEnabled by viewModel.spotlightEnabled.collectAsStateWithLifecycle()
+    val posterLandscapeTransformation by
+        viewModel.posterLandscapeTransformation.collectAsStateWithLifecycle()
+    val trailerCardLandscape by viewModel.trailerCardLandscape.collectAsStateWithLifecycle()
+    // In the hero-trailer themes the card turns landscape on the trailer's
+    // first frame, and that effect has its own switch under Themes.
+    val rowCardExpansion = if (HubColors.hasHeroTrailer) {
+        trailerCardLandscape
+    } else {
+        posterLandscapeTransformation
+    }
+    val clockEnabled by viewModel.clockEnabled.collectAsStateWithLifecycle()
+    val clockPosition by viewModel.clockPosition.collectAsStateWithLifecycle()
+    val clockHomeAutoHide by viewModel.clockHomeAutoHide.collectAsStateWithLifecycle()
+    // Keep the State object unwrapped here: only visible PosterCards read its
+    // value, so a trailer frame does not invalidate this entire screen.
+    val trailerPlayingItemKey = viewModel.trailerPlayingItemKey.collectAsStateWithLifecycle()
+    val isEditMode by viewModel.isEditMode.collectAsStateWithLifecycle()
+    val watchedIds by viewModel.watchedIds.collectAsStateWithLifecycle()
+    val watchedEpisodes by viewModel.watchedEpisodes.collectAsStateWithLifecycle()
+    val initialSyncComplete by viewModel.initialSyncComplete.collectAsStateWithLifecycle()
+    val mdblistLinked by graph.auth.mdblistLinked.collectAsStateWithLifecycle(initialValue = false)
+    val deletedListIds by graph.session.deletedListIds.collectAsStateWithLifecycle(initialValue = emptySet())
+    val scope = rememberCoroutineScope()
+    val hostActivity = LocalHostActivity.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val isNormalTheme = HubColors.variant == HubThemeVariant.NORMAL
+    var initialNormalFocusPending by remember { mutableStateOf(false) }
+    /**
+     * The row focus was last on, kept across a trip to another screen.
+     *
+     * Opening a title disposes this whole composable, and everything it only
+     * `remember`s goes with it — including which card the viewer was on. Coming
+     * back then ran the *arrival* path again and parked focus on the hero or
+     * the first card, which read as "it jumped to a different film". The row's
+     * `LazyColumn` key is enough to find it again; the row keeps its own card
+     * index the same way (see `MediaRow.restoreFocus`).
+     *
+     * Null while the spotlight holds focus, which the arrival path already
+     * returns to correctly.
+     */
+    var returnFocusRowKey by rememberSaveable { mutableStateOf<String?>(null) }
+    /** True from recomposition until the saved row has taken focus back. */
+    var returnFocusPending by remember { mutableStateOf(returnFocusRowKey != null) }
+    val onReturnFocusRestored = { returnFocusPending = false }
+    /**
+     * Whether anything at all on this screen holds focus.
+     *
+     * Read from the root, so it covers the rail and the content alike. It
+     * exists for the one state that leaves a television unusable: every row
+     * resolving empty — an expired MDBList key, a quota the account has
+     * already spent, the network down — renders a screen with no focusable on
+     * it, and a D-pad press then has no origin to search from. The key event
+     * goes unhandled, the launcher takes it, and the app simply disappears
+     * with no way back into Settings to fix the cause. See the effect below.
+     */
+    var screenHasFocus by remember { mutableStateOf(false) }
+
+    // Hoisted so the reorder-reveal below can convert a row index into a
+    // `LazyColumn` index. These two decide how many fixed items sit above the
+    // row list, and stating them once is what keeps that arithmetic from
+    // drifting out of step with the items themselves.
+    /**
+     * Whether the site's hero opens the page.
+     *
+     * Every palette, not just the one whose colours the web build happens to
+     * use: the hero is the home screen's shape, and a theme is a set of
+     * colours to paint that shape in — which is why nothing below asks which
+     * variant is painted, and why the hero itself reads `HubColors` for every
+     * fill it draws rather than carrying the site's violet around.
+     *
+     * Held up through the load rather than appearing when the query lands:
+     * the block is most of the viewport, and letting the rows paint at the
+     * top first would push them the height of a hero the moment it arrived.
+     * Once loaded, an empty spotlight means the account has nothing to
+     * feature — or the viewer turned it off in Settings — and the hero gives
+     * the space back rather than sitting empty, which is what puts each
+     * theme's own hero, `FocusedBackdrop` and the row strips back exactly as
+     * they were.
+     */
+    val hasSpotlightHero = spotlightEnabled &&
+        !isEditMode &&
+        (!spotlightLoaded || spotlight.isNotEmpty())
+    val hasHeroItem = !hasSpotlightHero &&
+        !HubColors.isNetflixLayout &&
+        !HubColors.isPrimefly &&
+        !isNormalTheme
+    val hasResumeItem = resumePoints.isNotEmpty() && !isEditMode
+    val homeListState = rememberLazyListState()
+    var lastFocusedListItemIndex by remember { mutableStateOf<Int?>(null) }
+    val heroPrimaryFocusRequester = remember { FocusRequester() }
+    var lastContentFocusWasSpotlight by remember { mutableStateOf(false) }
+    // Saveable so that coming back from a title lands on the same layout it
+    // left — the focused-title hero over its shelf strip — instead of replaying
+    // the spotlight's exit under the card that is taking focus back.
+    var browsingRowsWithFocusedHero by rememberSaveable(HubColors.variant) { mutableStateOf(false) }
+    // Seeded from the flag above rather than saved itself: saved mid-exit it
+    // would come back already at zero alpha, with no animation left to finish
+    // and so nothing to ever raise `browsingRowsWithFocusedHero`.
+    val spotlightExitState = remember(HubColors.variant) {
+        mutableStateOf(browsingRowsWithFocusedHero)
+    }
+    var spotlightExitPending by spotlightExitState
+    val usesFocusedShelfHero = HubColors.isNetflixLayout || HubColors.isPrimefly
+    // Remembered: a fresh function reference per recomposition would change
+    // the composition local below and recompose every row under it.
+    val warmHeroNeighbors = remember(viewModel, usesFocusedShelfHero) {
+        if (usesFocusedShelfHero) viewModel::warmHeroNeighbors else { _: List<MediaItem> -> }
+    }
+    val showFocusedHeroForRows = hasSpotlightHero &&
+        usesFocusedShelfHero &&
+        browsingRowsWithFocusedHero
+    val spotlightOwnsViewport = hasSpotlightHero && !showFocusedHeroForRows
+    // The two halves of one handover along a shared vertical axis, rather than
+    // a cross-dissolve. See [HERO_EXIT_MS] for why the old symmetric fade had
+    // to be a full second and this does not.
+    val heroAxisShiftPx = with(LocalDensity.current) { HERO_AXIS_SHIFT.toPx() }
+    val focusedShelfHeroAlpha by animateFloatAsState(
+        targetValue = if (showFocusedHeroForRows || !hasSpotlightHero) 1f else 0f,
+        animationSpec = tween(HERO_ENTER_MS, easing = HubMotion.EmphasizedDecelerate),
+        label = "focused-shelf-hero-alpha",
+    )
+    val spotlightHeroAlpha by animateFloatAsState(
+        targetValue = if (spotlightExitPending) 0f else 1f,
+        animationSpec = tween(HERO_EXIT_MS, easing = HubMotion.EmphasizedAccelerate),
+        label = "spotlight-exit-alpha",
+        finishedListener = { alpha ->
+            if (
+                alpha == 0f &&
+                spotlightExitPending &&
+                hasSpotlightHero &&
+                usesFocusedShelfHero
+            ) {
+                // Set the anchor before the layout changes from a full-height
+                // spotlight list to the short shelf strip. Doing this in a
+                // LaunchedEffect was one frame late, which made the cards
+                // briefly disappear and repaint as a visible blink.
+                lastFocusedListItemIndex?.let { homeListState.requestScrollToItem(it) }
+                browsingRowsWithFocusedHero = true
+            }
+        },
+    )
+
+    // Netflixy/Primefly and their autoplay counterparts have two home states:
+    // the rotating spotlight opens the page, then the clearlogo/synopsis hero
+    // follows the card focused below it. Autotrailer changes only whether the
+    // static artwork gives way to video; it must not remove the hero itself.
+    LaunchedEffect(hasSpotlightHero, usesFocusedShelfHero) {
+        if (!hasSpotlightHero || !usesFocusedShelfHero) {
+            browsingRowsWithFocusedHero = false
+            spotlightExitPending = false
+        }
+    }
+
+    val onShelfItemFocused = {
+        lastContentFocusWasSpotlight = false
+        if (hasSpotlightHero && usesFocusedShelfHero) {
+            if (!browsingRowsWithFocusedHero) spotlightExitPending = true
+        }
+    }
+    val rowToReveal by viewModel.rowToReveal.collectAsStateWithLifecycle()
+
+    /**
+     * Follows a row that edit mode just moved.
+     *
+     * Without this the reorder appears to do nothing: the write lands, the
+     * rows come back in the new order, but a `LazyColumn` anchors its scroll to
+     * whatever was at the top — and these rows are a poster carousel tall, so
+     * only one or two fit at 10-foot sizing. The moved row leaves the viewport,
+     * and the only way to see where it went is to scroll after it, which is
+     * exactly the work reordering was supposed to save. On the remote it costs
+     * more than a scroll: a row that leaves the viewport is disposed, and the
+     * D-pad focus sitting on its arrow button goes with it.
+     *
+     * Scrolls only when the destination is not already fully on screen, so a
+     * move between two visible rows stays where it is instead of snapping.
+     */
+    LaunchedEffect(rowToReveal) {
+        val reveal = rowToReveal ?: return@LaunchedEffect
+        val leading = (if (hasSpotlightHero) 1 else 0) +
+            (if (hasHeroItem) 1 else 0) +
+            (if (hasResumeItem) 1 else 0)
+        val targetIndex = leading + reveal.rowIndex
+        val layout = homeListState.layoutInfo
+        val visible = layout.visibleItemsInfo.firstOrNull { it.index == targetIndex }
+        val fullyVisible = visible != null &&
+            visible.offset >= layout.viewportStartOffset &&
+            visible.offset + visible.size <= layout.viewportEndOffset
+        if (!fullyVisible) {
+            homeListState.animateScrollToItem(targetIndex)
+        }
+        viewModel.onRowRevealed()
+    }
+
+    // Was NORMAL-only, because NORMAL was the only theme whose first
+    // focusable was a row card. Now every theme opens on the hero, and the
+    // hero is where focus should start on every one of them.
+    LaunchedEffect(isNormalTheme, hasSpotlightHero) {
+        initialNormalFocusPending = (isNormalTheme || hasSpotlightHero) && !returnFocusPending
+    }
+
+    // The saved row may be gone by the time the screen is back — deleted,
+    // hidden, emptied by a sync. Give up on it and fall back to an ordinary
+    // arrival rather than leaving the screen with nothing focused.
+    LaunchedEffect(Unit) {
+        if (!returnFocusPending) return@LaunchedEffect
+        delay(RETURN_FOCUS_TIMEOUT_MS)
+        if (!returnFocusPending) return@LaunchedEffect
+        returnFocusPending = false
+        returnFocusRowKey = null
+        browsingRowsWithFocusedHero = false
+        spotlightExitPending = false
+        homeListState.scrollToItem(0)
+        initialNormalFocusPending = isNormalTheme || hasSpotlightHero
+    }
+
+    DisposableEffect(lifecycleOwner, viewModel, isNormalTheme, hasSpotlightHero) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                viewModel.refreshDynamicRows(force = consumeForcedRefresh())
+                // A resume is an arrival only when nothing is focused yet.
+                // It also fires on the way back from a title, a beat after
+                // the row has taken its card back, and re-arming the opening
+                // focus there is what moved it to the hero.
+                if ((isNormalTheme || hasSpotlightHero) && !returnFocusPending && !screenHasFocus) {
+                    initialNormalFocusPending = true
+                }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    val extraCatalogs = remember(allLists, addonCatalogs, deletedListIds) {
+        val representedListIds = allLists.mapTo(deletedListIds.toMutableSet()) { it.id }
+        addonCatalogs.filterNot { catalog ->
+            catalog.mdblistMirrorListId()?.let { it in representedListIds } == true
+        }
+    }
+    val homeRows = remember(lists, allLists, feeds, allFeeds, extraCatalogs) {
+        val feedsStillUseDefaultPlacement = allFeeds.none { it.position != null }
+        val existingRowOffset = if (feedsStillUseDefaultPlacement) feeds.size else 0
+        val lastStoredPosition = maxOf(
+            allLists.maxOfOrNull { it.position } ?: -1,
+            allFeeds.mapNotNull { it.position }.maxOrNull() ?: -1,
+            extraCatalogs.mapNotNull { it.position }.maxOrNull() ?: -1,
+        )
+        var nextCatalogPosition = lastStoredPosition + 1
+        val feedRows = feeds.mapIndexed { index, feed ->
+            HomeMediaRow.Feed(
+                feed,
+                if (feedsStillUseDefaultPlacement) index else feed.position ?: index,
+            )
+        }
+        val directRows = lists.map {
+            HomeMediaRow.Mdblist(it, it.position + existingRowOffset)
+        }
+        val catalogRows = extraCatalogs.map { catalog ->
+            HomeMediaRow.Stremio(
+                catalog,
+                (catalog.position ?: nextCatalogPosition++) + existingRowOffset,
+            )
+        }
+        (feedRows + directRows + catalogRows)
+            .sortedBy { it.position }
+            .mapIndexed { index, row ->
+                when (row) {
+                    is HomeMediaRow.Mdblist -> row.copy(position = index)
+                    is HomeMediaRow.Feed -> row.copy(position = index)
+                    is HomeMediaRow.Stremio -> row.copy(position = index)
+                }
+            }
+    }
+    val openCatalogItem: (MediaItem) -> Unit = { item ->
+        if (item.tmdbId > 0) {
+            onOpenTitle(item)
+        } else {
+            item.imdbId?.let { imdbId ->
+                scope.launch {
+                    graph.media.resolveImdb(item.type, imdbId).onSuccess { tmdbId ->
+                        onOpenTitle(item.copy(tmdbId = tmdbId))
+                    }
+                }
+            }
+        }
+    }
+    val resumePlayback: (ResumePoint) -> Unit = { point ->
+        if ((point.tmdbId ?: 0) > 0) {
+            onResume(point)
+        } else {
+            // The player route is TMDB-keyed. Resolve the uncommon IMDb-only
+            // resume entry without throwing away its season, episode or progress.
+            point.imdbId?.let { imdbId ->
+                scope.launch {
+                    graph.media.resolveImdb(point.type, imdbId).onSuccess { tmdbId ->
+                        onResume(point.copy(tmdbId = tmdbId))
+                    }
+                }
+            }
+        }
+    }
+    val playOption: (HomeOptionTarget) -> Unit = { target ->
+        if (target.item.tmdbId > 0) {
+            onPlay(target.item, target.season, target.episode)
+        } else {
+            target.item.imdbId?.let { imdbId ->
+                scope.launch {
+                    graph.media.resolveImdb(target.item.type, imdbId).onSuccess { tmdbId ->
+                        onPlay(
+                            target.item.copy(tmdbId = tmdbId),
+                            target.season,
+                            target.episode,
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    var showExitDialog by remember { mutableStateOf(false) }
+    var renameTarget by remember { mutableStateOf<EditableListTarget?>(null) }
+    var renameValue by remember { mutableStateOf("") }
+    var deleteTarget by remember { mutableStateOf<EditableListTarget?>(null) }
+    var optionTarget by remember { mutableStateOf<HomeOptionTarget?>(null) }
+    val emptyStateFocusRequester = remember { FocusRequester() }
+    val railFocusRequester = remember { FocusRequester() }
+    val contentFocusRequester = remember { FocusRequester() }
+    /**
+     * Holds the row list still across a trip to the side rail.
+     *
+     * `focusRestorer()` on the list below already brings focus back to the row
+     * the user left, and that part was never the problem: the row it *landed*
+     * on was right, but the list had scrolled a row's worth underneath it, so
+     * a neighbour ended up parked at the pivot and it read as "it moved up a
+     * line". The scroll comes from the pivot spec, which recomputes on the
+     * restore's bring-into-view request the same as on any other focus move —
+     * except this one is not a move. Nothing scrolled while the rail had
+     * focus, so the correct scroll distance on the way back is zero, and this
+     * flag is what says so.
+     *
+     * It stays raised for a beat past the hand-off because the restore's
+     * requests arrive after the rail has already given up focus.
+     */
+    val pinnedForRail = remember { mutableStateOf(false) }
+    var railFocused by remember { mutableStateOf(false) }
+    var railReturnListPosition by remember { mutableStateOf<Pair<Int, Int>?>(null) }
+    /**
+     * The row focus should come back to, named for the list's `enter` below.
+     *
+     * Pinning the scroll alone was not enough: with the pivot leaving a sliver
+     * of the previous row showing above the focused one, the default focus
+     * search entering from the rail picks that sliver — it is geometrically
+     * the nearer candidate — and `focusRestorer()` did not get consulted at
+     * all. `enter` is consulted, and it is resolved by the focus system during
+     * the search rather than after it, so unlike a `requestFocus()` fired from
+     * a focus callback there is no transaction still in flight to overwrite it.
+     */
+    var lastFocusedRow by remember { mutableStateOf<FocusRequester?>(null) }
+    val shelfLeadingItemCount =
+        (if (hasSpotlightHero) 1 else 0) + (if (hasHeroItem) 1 else 0)
+    val homeRowsStartIndex = shelfLeadingItemCount + (if (hasResumeItem) 1 else 0)
+    val becauseYouWatchedStartIndex = homeRowsStartIndex + homeRows.size
+
+    LaunchedEffect(railFocused) {
+        if (!railFocused && pinnedForRail.value) {
+            // Long enough to cover the restore's bring-into-view, short enough
+            // that a D-pad press the user makes after it is scrolled normally.
+            kotlinx.coroutines.delay(200)
+            pinnedForRail.value = false
+        }
+    }
+    val normalFirstRowOffsetPx = with(LocalDensity.current) { 36.dp.toPx() }
+    val cyberpunkRowOffsetPx = with(LocalDensity.current) { CYBERPUNK_ROW_HEADER_HEIGHT.toPx() }
+    val spotlightHeroHeightPx = with(LocalDensity.current) { spotlightHeroHeight().toPx() }
+    val focusedShelfViewportHeightPx = with(LocalDensity.current) {
+        when {
+            HubColors.isPrimefly -> 297.dp.toPx()
+            HubColors.isNetflixLayout -> 257.dp.toPx()
+            else -> 0f
+        }
+    }
+    // Read through a `State` rather than captured: the spec outlives the
+    // composition that built it, and a captured boolean would keep answering
+    // for whichever spotlight the screen had when the theme was last changed.
+    val heroPresent = rememberUpdatedState(spotlightOwnsViewport)
+    // Deliberately a second, separate `State` from `heroPresent` above, even
+    // though both start from the spotlight: `heroPresent` picks the *pivot*
+    // once the hero-specific scroll distance below has declined to answer,
+    // and for that question "does the spotlight currently own the whole flat
+    // list" is right — past it, Cyberflix/Netflixy/etc. need their own
+    // per-theme pivot back. The scroll-distance override just below needs a
+    // different question answered: "is `SpotlightHeroBlock` still physically
+    // sitting at item 0", which stays true across the very recomposition
+    // where `browsingRowsWithFocusedHero` (and so `spotlightOwnsViewport`)
+    // flips to false — `onShelfItemFocused` sets it synchronously the instant
+    // a shelf card takes focus, before this bring-into-view request is
+    // answered. That is precisely the first "down" press out of the hero the
+    // comment above `heroScrollDistance` calls out as the moment that decides
+    // whether the rows scroll at all, so gating that override on
+    // `spotlightOwnsViewport` silently disabled it on the one press that
+    // needed it, leaving the just-focused row's bring-into-view to fall back
+    // to a per-theme pivot sized for a viewport without a hero — while the
+    // hero was still on screen, still its full height. Gating it on
+    // `hasSpotlightHero` instead keeps the override live for exactly as long
+    // as item 0 actually is the spotlight; `firstVisibleItemIndex != 0` below
+    // still turns it off the moment the list has genuinely scrolled past it.
+    val heroItemAtTop = rememberUpdatedState(hasSpotlightHero)
+    val rowPivotScroll = remember(
+        HubColors.variant,
+        normalFirstRowOffsetPx,
+        cyberpunkRowOffsetPx,
+        spotlightHeroHeightPx,
+        focusedShelfViewportHeightPx,
+    ) {
+        RowPivotScroll(
+            HubColors.variant,
+            normalFirstRowOffsetPx,
+            cyberpunkRowOffsetPx,
+            focusedShelfViewportHeightPx,
+            pinnedForRail,
+            heroPresent,
+            spotlightExitState,
+        ) { offset, size ->
+            // How much of the hero has already gone off the top. The hero
+            // spans `-scrolledOff .. heroHeight - scrolledOff` in the
+            // viewport's own coordinates, which is what the two bounds below
+            // compare against; the slack absorbs sub-pixel rounding rather
+            // than widening the test.
+            val scrolledOff = homeListState.firstVisibleItemScrollOffset.toFloat()
+            when {
+                !heroItemAtTop.value -> null
+                // Past the hero the list is back to ordinary rows, and so is
+                // the pivot.
+                homeListState.firstVisibleItemIndex != 0 -> null
+                offset < -scrolledOff - SUB_PIXEL_SLACK -> null
+                offset + size > spotlightHeroHeightPx - scrolledOff + SUB_PIXEL_SLACK -> null
+                else -> -scrolledOff
+            }
+        }
+    }
+    val onInitialNormalFocusHandled = { initialNormalFocusPending = false }
+
+    optionTarget?.let { target ->
+        val isWatched = if (
+            target.item.type == MediaType.SHOW &&
+            target.season != null &&
+            target.episode != null
+        ) {
+            watchedEpisodes.contains("${target.item.tmdbId}:${target.season}:${target.episode}")
+        } else {
+            watchedIds.contains(target.item.tmdbId)
+        }
+        MediaOptionsDialog(
+            isWatched = isWatched,
+            onPlay = {
+                playOption(target)
+                optionTarget = null
+            },
+            onInfo = {
+                openCatalogItem(target.item)
+                optionTarget = null
+            },
+            onToggleWatched = {
+                viewModel.setWatched(target.item, target.season, target.episode, !isWatched)
+                optionTarget = null
+            },
+            onChooseSource = {
+                target.resumePoint?.let(resumePlayback)
+                    ?: onChooseSource(target.item, target.season, target.episode)
+                optionTarget = null
+            },
+            onReset = target.resumePoint?.let { point ->
+                {
+                    viewModel.resetResumePoint(point)
+                    optionTarget = null
+                }
+            },
+            onDismiss = { optionTarget = null },
+        )
+    }
+
+    if (showExitDialog) {
+        Dialog(onDismissRequest = { showExitDialog = false }) {
+            Box(
+                modifier = Modifier
+                    .background(
+                        HubColors.Surface, 
+                        shape = RoundedCornerShape(16.dp)
+                    )
+                    .padding(32.dp)
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally, 
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    Text(
+                        stringResource(R.string.home_exit_question),
+                        style = MaterialTheme.typography.titleLarge, 
+                        color = HubColors.Text
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                        Button(
+                            onClick = { 
+                                showExitDialog = false
+                                viewModel.signOut(onSignOut) 
+                            }
+                        ) {
+                            Text(stringResource(R.string.home_yes))
+                        }
+                        Button(onClick = { showExitDialog = false }) {
+                            Text(stringResource(R.string.home_no))
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    renameTarget?.let { target ->
+        Dialog(onDismissRequest = { renameTarget = null }) {
+            Column(
+                modifier = Modifier
+                    .width(520.dp)
+                    .background(HubColors.Surface, RoundedCornerShape(16.dp))
+                    .padding(28.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                Text(stringResource(R.string.home_rename_list), style = MaterialTheme.typography.titleLarge, color = HubColors.Text)
+                BasicTextField(
+                    value = renameValue,
+                    onValueChange = { renameValue = it },
+                    singleLine = true,
+                    textStyle = MaterialTheme.typography.titleLarge.copy(color = HubColors.Text),
+                    cursorBrush = SolidColor(HubColors.Accent2),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(HubColors.Background, RoundedCornerShape(10.dp))
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Button(
+                        enabled = renameValue.isNotBlank(),
+                        onClick = {
+                            when (target) {
+                                is EditableListTarget.Mdblist ->
+                                    viewModel.renameList(target.list, renameValue)
+                                is EditableListTarget.Stremio ->
+                                    viewModel.renameCatalog(target.catalog, renameValue)
+                                is EditableListTarget.Feed ->
+                                    viewModel.renameFeed(target.feed, renameValue)
+                            }
+                            renameTarget = null
+                        },
+                    ) { Text(stringResource(R.string.home_save)) }
+                    Button(onClick = { renameTarget = null }) { Text(stringResource(R.string.home_cancel)) }
+                }
+            }
+        }
+    }
+
+    deleteTarget?.let { target ->
+        Dialog(onDismissRequest = { deleteTarget = null }) {
+            Column(
+                modifier = Modifier
+                    .width(560.dp)
+                    .background(HubColors.Surface, RoundedCornerShape(16.dp))
+                    .padding(28.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+            ) {
+                Text(stringResource(R.string.home_delete_list_question), style = MaterialTheme.typography.titleLarge, color = HubColors.Text)
+                Text(
+                    when (target) {
+                        is EditableListTarget.Mdblist ->
+                            stringResource(R.string.home_delete_mdblist_body, target.displayName)
+                        is EditableListTarget.Stremio ->
+                            stringResource(R.string.home_delete_addon_body, target.displayName)
+                        is EditableListTarget.Feed ->
+                            stringResource(R.string.home_delete_feed_body, target.displayName)
+                    },
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = HubColors.TextDim,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Button(
+                        onClick = {
+                            when (target) {
+                                is EditableListTarget.Mdblist -> viewModel.deleteList(target.list)
+                                is EditableListTarget.Stremio -> viewModel.deleteCatalog(target.catalog)
+                                is EditableListTarget.Feed -> viewModel.deleteFeed(target.feed)
+                            }
+                            deleteTarget = null
+                        },
+                    ) { Text(stringResource(R.string.home_delete)) }
+                    Button(onClick = { deleteTarget = null }) { Text(stringResource(R.string.home_cancel)) }
+                }
+            }
+        }
+    }
+
+    // Remembered because this composable recomposes on every card focus (it
+    // reads `focused` for the hero panel), and neither of these depends on
+    // that — rebuilding them per focus is pure allocation.
+    val menuHome = stringResource(R.string.menu_home)
+    val menuSearch = stringResource(R.string.menu_search)
+    val menuLists = stringResource(R.string.menu_lists)
+    val menuListsDone = stringResource(R.string.menu_lists_done)
+    val menuSettings = stringResource(R.string.menu_settings)
+    val menuExit = stringResource(R.string.menu_exit)
+
+    val rail = remember(isEditMode, menuHome, menuSearch, menuLists, menuListsDone, menuSettings, menuExit) {
+        listOf(
+            RailItem("home", menuHome, Icons.Default.Home),
+            RailItem("search", menuSearch, Icons.Default.Search),
+            RailItem("lists", if (isEditMode) menuListsDone else menuLists, if (isEditMode) Icons.Default.Check else Icons.AutoMirrored.Filled.ViewList),
+            RailItem("settings", menuSettings, Icons.Default.Settings),
+            RailItem("exit", menuExit, Icons.AutoMirrored.Filled.Logout),
+        )
+    }
+    val resumeCards = remember(resumePoints) { resumePoints.map { it.toCardItem() } }
+
+    /**
+     * Raised only for the moment it takes to hand focus to the rail.
+     *
+     * The rail collapses to zero width when nothing there holds focus, and a
+     * zero-width node cannot *take* focus — so the rescue below has to widen it
+     * first, then let go. It is not a "something is wrong" flag and nothing on
+     * screen reads it as one.
+     */
+    var railRescue by remember { mutableStateOf(false) }
+
+    // The one thing this loop is for: a screen where *nothing at all* holds
+    // focus leaves the D-pad with no origin to search from, the key event goes
+    // unhandled, and the app drops to the launcher. Parking focus on the rail
+    // costs nothing and makes that impossible.
+    //
+    // It deliberately draws no conclusion beyond that. An earlier version also
+    // rendered a "nothing to show" notice from this same signal, and it was
+    // wrong twice over: it fired during an ordinary cold start that was merely
+    // slow, and — worse — it treated *the rail holding focus* as the symptom,
+    // so simply opening the menu and reading it for a few seconds accused the
+    // app of being broken. Whether the account actually has rows is a question
+    // about data, and the empty states further down already answer it from the
+    // data itself.
+    LaunchedEffect(Unit) {
+        while (isActive) {
+            // Nothing to rescue while the first sync is still running: the
+            // loading screen owns that state, and several sequential network
+            // calls on a cold cache can easily outlast the window below.
+            if (!initialSyncComplete || screenHasFocus) {
+                delay(POLL_MS)
+                continue
+            }
+
+            // Give the normal case room to resolve: rows land a beat after the
+            // first composition, and whichever one takes focus ends this.
+            delay(FOCUS_FALLBACK_MS)
+            if (screenHasFocus) continue
+
+            railRescue = true
+            delay(RAIL_EXPAND_MS)
+            runCatching { railFocusRequester.requestFocus() }
+            // Dropped again immediately: once focus has landed the rail holds
+            // itself open, and leaving the override raised would pin it open
+            // after the viewer moves back into the rows.
+            delay(RAIL_EXPAND_MS)
+            railRescue = false
+        }
+    }
+
+    /**
+     * Back, on the screen Back lands on most often.
+     *
+     * Home is the root of the graph, so this button used to fall straight
+     * through to the system: one press anywhere in the rows and the app was
+     * gone, with no step in between. That is the wrong weight for a key people
+     * press to mean "up a level".
+     *
+     * The first press now means exactly that, and hands focus to the rail —
+     * the only thing on this screen Back could sensibly go *to*. A second
+     * press, with the rail already holding focus, has nowhere further up to go
+     * and leaves.
+     *
+     * Expanding before asking for focus is the rail rescue's dance, borrowed
+     * for the reason it exists there: the rail is collapsed until something
+     * inside it holds focus, and a collapsed rail has no target to give. Once
+     * focus lands, the rail pins itself open (see its `onFocusChanged`), which
+     * is why the override is dropped again straight after.
+     */
+    /**
+     * Whether the home's clock is on screen, which is a different question
+     * from whether the viewer turned a clock on at all.
+     *
+     * With the auto-hide setting off it simply stays. With it on it is shown
+     * on arrival, fades after [HOME_CLOCK_VISIBLE_MS], and comes back the
+     * next time this screen takes focus — returning from a title, the player
+     * or settings re-runs this effect, which is what makes "hidden" a resting
+     * state rather than a one-way door.
+     *
+     * `screenHasFocus` is read from the *outer* box, which contains the rail,
+     * so walking into the menu and back out is deliberately not an arrival.
+     */
+    var clockVisible by remember { mutableStateOf(true) }
+    LaunchedEffect(clockEnabled, clockHomeAutoHide, screenHasFocus) {
+        clockVisible = true
+        if (!clockEnabled || !clockHomeAutoHide || !screenHasFocus) return@LaunchedEffect
+        delay(HOME_CLOCK_VISIBLE_MS)
+        clockVisible = false
+    }
+
+    BackHandler {
+        if (railFocused) {
+            hostActivity?.finish()
+        } else {
+            scope.launch {
+                railRescue = true
+                delay(RAIL_EXPAND_MS)
+                runCatching { railFocusRequester.requestFocus() }
+                delay(RAIL_EXPAND_MS)
+                railRescue = false
+            }
+        }
+    }
+
+    Box(
+        Modifier
+            .fillMaxSize()
+            // The app shell has a subtle Surface -> Background gradient at
+            // the top. That works for ordinary screens, but the bounded hero
+            // dissolves into the theme's solid Background; letting the shell
+            // show through here placed two near-black tones side by side and
+            // revealed the artwork rectangle. Streaming-layout homes own a
+            // solid canvas so the Nuvio-style edge veil and the page end in
+            // exactly the same colour.
+            .let {
+                if (usesFocusedShelfHero) it.background(HubColors.Background)
+                else it
+            }
+            .onFocusChanged { screenHasFocus = it.hasFocus },
+    ) {
+        // The fanart follows focus, the way Estuary does it: whatever the
+        // remote is pointing at fills the screen behind the rows.
+        //
+        // CyberFlix is the exception, and deliberately so: there the artwork is
+        // not a full-bleed field behind everything but a bounded block in the
+        // hero, sharing its rectangle with the trailer that replaces it (see
+        // CyberFlix and OptimusPrime are the exceptions, and deliberately so:
+        // there the artwork is not a full-bleed field behind everything but a
+        // bounded block in the hero, sharing its rectangle with the trailer that
+        // replaces it (see `HeroArtBlock`). Painting both would put the same
+        // backdrop on screen twice at different sizes, and the trailer would then
+        // be crossfading against a copy of the still it is supposed to be replacing.
+        //
+        // The spotlight hero is a third exception, and the most complete one:
+        // it is the web home translated whole, and there the artwork belongs
+        // to the hero and the rows below sit on flat page background. Painting
+        // a focus-following fanart under them as well would be the one thing
+        // that gives the port away.
+        if (!usesFocusedShelfHero && !hasSpotlightHero) {
+            FocusedBackdrop(viewModel)
+        }
+
+        // The rail belongs on top of Home, not beside it. Giving it a share
+        // of this layout's width remeasures the spotlight while it opens: a
+        // long title can gain a line, pushing the action row below the
+        // hero's clipped bottom, and the backdrop visibly recrops on every
+        // trip to the menu. Keeping the content full-width makes both focus
+        // states the same Hero; the rail merely covers its left edge.
+        Box(Modifier.fillMaxSize()) content@{
+            // Composed before the rail and lifted above it, so it survives
+            // each of the early returns below — the empty states are exactly
+            // the screens someone is most likely to be sitting in front of.
+            if (clockEnabled) {
+                AnimatedVisibility(
+                    visible = clockVisible,
+                    enter = fadeIn(),
+                    exit = fadeOut(),
+                    modifier = Modifier
+                        .align(clockPosition.alignment)
+                        .zIndex(2f)
+                        .padding(
+                            top = HubDimens.ScreenPaddingVertical,
+                            start = HubDimens.ScreenPaddingHorizontal,
+                            end = HubDimens.ScreenPaddingHorizontal,
+                        ),
+                ) {
+                    AppClock(position = clockPosition)
+                }
+            }
+
+            SideRail(
+                items = rail,
+                selectedKey = "home",
+                focusRequester = railFocusRequester,
+                onMoveFocusRight = {
+                    when {
+                        lastContentFocusWasSpotlight ->
+                            heroPrimaryFocusRequester.requestFocus()
+                        lastFocusedRow != null -> {
+                            val rowFocus = lastFocusedRow
+                            val listPosition = railReturnListPosition
+                            if (listPosition == null) {
+                                rowFocus?.requestFocus() == true
+                            } else {
+                                // A playing trailer adds an AndroidView to the
+                                // fixed hero while focus is on the rail. That
+                                // re-layout can make LazyColumn re-anchor to
+                                // its first item (the Spotlight) before the
+                                // card receives focus again, producing two
+                                // heroes stacked on screen. Restore the exact
+                                // position captured on entry before handing
+                                // focus back to the row.
+                                scope.launch {
+                                    homeListState.scrollToItem(
+                                        listPosition.first,
+                                        listPosition.second,
+                                    )
+                                    if (rowFocus?.requestFocus() != true) {
+                                        contentFocusRequester.requestFocus()
+                                    }
+                                }
+                                true
+                            }
+                        }
+                        else -> contentFocusRequester.requestFocus()
+                    }
+                },
+                forceExpanded = railRescue,
+                modifier = Modifier.zIndex(1f),
+                onSelect = { item ->
+                    when (item.key) {
+                        "search" -> onOpenSearch()
+                        "lists" -> viewModel.toggleEditMode()
+                        "settings" -> onOpenSettings()
+                        "exit" -> showExitDialog = true
+                    }
+                },
+                onFocusChanged = { focused ->
+                    railFocused = focused
+                    if (focused) {
+                        // This must be synchronous with the focus hand-off.
+                        // A LaunchedEffect can start a frame later, after a
+                        // fast Right press has already asked the list to bring
+                        // its row back into view.
+                        pinnedForRail.value = true
+                        if (!lastContentFocusWasSpotlight && lastFocusedRow != null) {
+                            railReturnListPosition =
+                                homeListState.firstVisibleItemIndex to
+                                    homeListState.firstVisibleItemScrollOffset
+                        }
+                    }
+                },
+            )
+
+            if (!mdblistLinked && lists.isEmpty() && feeds.isEmpty() && resumePoints.isEmpty() && extraCatalogs.isEmpty()) {
+                LaunchedEffect(Unit) {
+                    emptyStateFocusRequester.requestFocus()
+                }
+                Column(
+                    modifier = Modifier.fillMaxSize().padding(48.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(14.dp, Alignment.CenterVertically),
+                ) {
+                    Text(
+                        stringResource(R.string.home_empty_title),
+                        style = MaterialTheme.typography.headlineSmall,
+                        color = HubColors.Text,
+                    )
+                    Text(
+                        stringResource(R.string.home_empty_desc),
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = HubColors.TextDim,
+                    )
+                    HubButton(
+                        text = stringResource(R.string.home_empty_button),
+                        primary = true,
+                        onClick = onOpenAddons,
+                        modifier = Modifier.focusRequester(emptyStateFocusRequester),
+                    )
+                }
+                return@content
+            }
+
+            // Gated on the sync flag, not on the row lists. The old condition
+            // was `lists.isNotEmpty() && allLists.isEmpty()`, and `lists` is
+            // `allLists` with the hidden ones filtered out — a subset can
+            // never be non-empty while its superset is empty, so this branch
+            // was unreachable and the message never appeared once.
+            if (!initialSyncComplete && allLists.isEmpty()) {
+                LoadingScreen(message = stringResource(R.string.home_syncing))
+            }
+
+            if (lists.isEmpty() && feeds.isEmpty() && resumePoints.isEmpty() && extraCatalogs.isEmpty()) {
+                val hasHiddenRows = allLists.isNotEmpty() || allFeeds.isNotEmpty() || allAddonCatalogs.isNotEmpty()
+                LaunchedEffect(hasHiddenRows) { emptyStateFocusRequester.requestFocus() }
+                Column(
+                    modifier = Modifier.fillMaxSize().padding(48.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(14.dp, Alignment.CenterVertically),
+                ) {
+                    Text(
+                        stringResource(
+                            if (hasHiddenRows) R.string.home_no_visible_rows else R.string.home_no_lists,
+                        ),
+                        style = MaterialTheme.typography.headlineSmall,
+                        color = HubColors.Text,
+                    )
+                    Text(
+                        stringResource(
+                            if (hasHiddenRows) {
+                                R.string.home_no_visible_rows_desc
+                            } else {
+                                R.string.home_no_lists_desc
+                            },
+                        ),
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = HubColors.TextDim,
+                    )
+                    HubButton(
+                        text = stringResource(
+                            if (hasHiddenRows) R.string.home_edit_lists else R.string.home_empty_button,
+                        ),
+                        primary = true,
+                        onClick = if (hasHiddenRows) viewModel::toggleEditMode else onOpenAddons,
+                        modifier = Modifier.focusRequester(emptyStateFocusRequester),
+                    )
+                }
+                return@content
+            }
+
+            Column(
+                Modifier
+                    .fillMaxSize()
+                    .focusRequester(contentFocusRequester)
+                    .focusGroup(),
+            ) {
+                // Both members of each visual pair restore the same focused-
+                // title hero after focus leaves the spotlight. Netflixy and
+                // Primefly keep the backdrop still; CyberFlix and Optimus
+                // Prime may replace that same image with a trailer.
+                if (isNormalTheme && !hasSpotlightHero) {
+                    Box(Modifier.fillMaxWidth().height(76.dp)) {
+                        HeroPanel(viewModel)
+                    }
+                } else if (
+                    (!hasSpotlightHero || showFocusedHeroForRows) &&
+                    (HubColors.isNetflixLayout || HubColors.isPrimefly)
+                ) {
+                    Box(
+                        Modifier
+                            .weight(1f)
+                            // Arrives along the same axis the spotlight left
+                            // on, which is what makes the two halves read as
+                            // one movement instead of two fades.
+                            .graphicsLayer {
+                                alpha = focusedShelfHeroAlpha
+                                translationY =
+                                    (1f - focusedShelfHeroAlpha) * heroAxisShiftPx
+                                scaleX = lerp(HERO_SCALE_FROM, 1f, focusedShelfHeroAlpha)
+                                scaleY = lerp(HERO_SCALE_FROM, 1f, focusedShelfHeroAlpha)
+                            },
+                    ) {
+                        // Under the panel, not over it: the title, metadata and
+                        // synopsis have to stay legible across the whole
+                        // transition, and the block's left ramp is cut wide
+                        // enough (see `HeroArt`) that the artwork has already
+                        // faded out by the time it reaches them.
+                        // The gate decides *when* the hero changes title;
+                        // the art and the text both read what it decided.
+                        val heroTarget = remember { mutableStateOf<HeroPanelSnapshot?>(null) }
+                        val heroShown = remember { mutableStateOf<HeroPanelSnapshot?>(null) }
+                        SettledHeroGate(viewModel, heroTarget, heroShown)
+                        HeroArtBlock(
+                            viewModel = viewModel,
+                            target = heroTarget,
+                            onBackdropRevealed = { url ->
+                                heroTarget.value
+                                    ?.takeIf { it.backdropUrl == url }
+                                    ?.let { heroShown.value = it }
+                            },
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .fillMaxHeight()
+                                .fillMaxWidth(HERO_ART_WIDTH_FRACTION)
+                                // Drawing-only overscan: the hero grows from
+                                // the physical top-right corner, but its
+                                // measured size remains unchanged, so neither
+                                // the metadata nor the rows move by a pixel.
+                                .graphicsLayer {
+                                    scaleX = HERO_ART_OVERSCAN_X
+                                    scaleY = HERO_ART_OVERSCAN_Y
+                                    transformOrigin = TransformOrigin(1f, 0f)
+                                },
+                        )
+                        SettledHeroPanel(heroShown, viewModel)
+                    }
+                }
+
+                CompositionLocalProvider(
+                    LocalBringIntoViewSpec provides rowPivotScroll,
+                    LocalRowFocusNeighbors provides warmHeroNeighbors,
+                ) {
+                    LazyColumn(
+                        state = homeListState,
+                        modifier = when {
+                            // One shape for every theme once the hero is up:
+                            // the fixed strip heights below exist to leave
+                            // room for a hero pinned *above* the list, and
+                            // this hero is the list's own first item, so the
+                            // rows simply scroll it away like the web home
+                            // does. Their measurements are untouched because
+                            // they are still exactly right for the layouts
+                            // they were taken for — the ones a theme falls
+                            // back to when there is no spotlight to show.
+                            spotlightOwnsViewport -> Modifier
+                                .fillMaxWidth()
+                                .weight(1f)
+                                .clipToBounds()
+                            // Primefly and Optimus Prime share the exact same
+                            // geometry. The only distinction is whether the
+                            // image in HeroArtBlock may become a trailer.
+                            HubColors.isPrimefly -> Modifier
+                                .fillMaxWidth()
+                                .height(297.dp)
+                                .clipToBounds()
+                            // Netflixy and CyberFlix likewise share the strip
+                            // height, clearlogo and synopsis layout.
+                            //
+                            // 257 dp is that heading's own lower edge, not a
+                            // rounder number nearby: the heading starts 232.3
+                            // dp into the list (top padding 12 + this shelf's
+                            // 206.3 + the 14 dp gap between shelves) and is
+                            // 24.6 dp tall, so 256.9 dp is the first line this
+                            // strip can be shortened to without slicing the
+                            // text itself — every dp below that starts eating
+                            // into the glyphs rather than the whitespace under
+                            // them. 264 had 7.1 dp of clipped-gap headroom
+                            // going spare below that line; this claims it for
+                            // the hero and stops exactly where the heading
+                            // does.
+                            HubColors.isNetflixLayout -> Modifier
+                                .fillMaxWidth()
+                                .height(257.dp)
+                                .clipToBounds()
+                            isNormalTheme -> Modifier
+                                .fillMaxWidth()
+                                .weight(1f)
+                                .clipToBounds()
+                            else -> Modifier.fillMaxSize()
+                        }.focusProperties {
+                            onEnter = { lastFocusedRow?.requestFocus() }
+                        },
+                        // Tighter than HubDimens.RowSpacing on purpose — with the
+                        // smaller posters, this is what keeps two rows of a list on
+                        // screen together instead of one full row plus a sliver of
+                        // the next.
+                        verticalArrangement = Arrangement.spacedBy(
+                            when {
+                                spotlightOwnsViewport -> 6.dp
+                                HubColors.isPrimefly -> 6.dp
+                                HubColors.isCyberpunk -> 8.dp
+                                else -> 14.dp
+                            },
+                        ),
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                            // Primefly positions the whole viewport instead;
+                            // padding here would be consumed when focus moves.
+                            // The spotlight hero wants the same zero for a
+                            // different reason: it is full-bleed artwork, and
+                            // 12 dp of background above it would frame it.
+                            top = if (HubColors.isPrimefly || spotlightOwnsViewport) 0.dp else 12.dp,
+                            // Room to park the last row at the pivot instead of
+                            // stopping short with it pinned to the bottom edge.
+                            bottom = HubDimens.ScreenPaddingVertical * 8,
+                        ),
+                    ) {
+                        if (hasSpotlightHero) {
+                            item(key = "spotlight") {
+                                SpotlightHeroBlock(
+                                    viewModel = viewModel,
+                                    onOpenTitle = onOpenTitle,
+                                    requestInitialFocus = initialNormalFocusPending &&
+                                        spotlight.isNotEmpty(),
+                                    onInitialFocusHandled = onInitialNormalFocusHandled,
+                                    primaryFocusRequester = heroPrimaryFocusRequester,
+                                    modifier = Modifier
+                                        .animateItem()
+                                        // Leaves along the axis the D-pad was
+                                        // pressed in, so the exit reads as the
+                                        // page moving rather than as artwork
+                                        // dissolving.
+                                        .graphicsLayer {
+                                            alpha = spotlightHeroAlpha
+                                            translationY =
+                                                -(1f - spotlightHeroAlpha) * heroAxisShiftPx
+                                            scaleX = lerp(HERO_SCALE_FROM, 1f, spotlightHeroAlpha)
+                                            scaleY = lerp(HERO_SCALE_FROM, 1f, spotlightHeroAlpha)
+                                        }
+                                        .onFocusChanged { focus ->
+                                            if (focus.hasFocus) {
+                                                lastContentFocusWasSpotlight = true
+                                                returnFocusRowKey = null
+                                                spotlightExitPending = false
+                                                // Nothing below is focused any
+                                                // more, and the hero that reads
+                                                // it has left composition.
+                                                viewModel.onSpotlightFocused()
+                                                if (browsingRowsWithFocusedHero) {
+                                                    browsingRowsWithFocusedHero = false
+                                                    scope.launch { homeListState.animateScrollToItem(0) }
+                                                }
+                                            }
+                                        },
+                                )
+                            }
+                        }
+
+                        // Normal joins the themes whose hero is fixed above the shelves.
+                        if (hasHeroItem) {
+                            item(key = "hero") {
+                                Box(modifier = Modifier.animateItem()) {
+                                    HeroPanel(viewModel)
+                                }
+                            }
+                        }
+
+                if (hasResumeItem) {
+                    item(key = RESUME_ROW_KEY) {
+                        val resumeRowFocus = remember { FocusRequester() }
+                        DisposableEffect(Unit) {
+                            onDispose { if (lastFocusedRow === resumeRowFocus) lastFocusedRow = null }
+                        }
+                        MediaRow(
+                            modifier = Modifier.animateItem(),
+                            title = stringResource(R.string.home_resume_row),
+                            items = resumeCards,
+                            // `card` alone cannot say which episode this is —
+                            // `toCardItem()` drops season/episode, so two
+                            // in-progress episodes of the same show produce
+                            // equal `MediaItem`s, and `indexOf` on those would
+                            // always resolve to the *first* one regardless of
+                            // which card was actually pressed. `resumeCards`
+                            // and `resumePoints` are the same list at the same
+                            // indices (see their construction above), so only
+                            // the position — not the card's own equality —
+                            // can say correctly which point this was. The hero
+                            // needs that same position for the same reason —
+                            // it writes the resumed episode's air date — which
+                            // is why focus is reported indexed here too.
+                            onItemFocusedIndexed = { index, focusedItem ->
+                                viewModel.onFocused(focusedItem, resumePoints.getOrNull(index))
+                                lastFocusedRow = resumeRowFocus
+                                returnFocusRowKey = RESUME_ROW_KEY
+                                lastFocusedListItemIndex = shelfLeadingItemCount
+                                onShelfItemFocused()
+                            },
+                            rowFocusRequester = resumeRowFocus,
+                            restoreFocus = returnFocusPending &&
+                                returnFocusRowKey == RESUME_ROW_KEY,
+                            onFocusRestored = onReturnFocusRestored,
+                            key = { index, item -> resumePoints.getOrNull(index)?.key ?: item.key },
+                            onItemClickIndexed = { index, _ ->
+                                val point = resumePoints.getOrNull(index)
+                                val card = resumeCards.getOrNull(index)
+                                if (point != null && card != null && point.type == MediaType.SHOW &&
+                                    point.season != null && point.episode != null
+                                ) {
+                                    optionTarget = HomeOptionTarget(
+                                        item = card,
+                                        season = point.season,
+                                        episode = point.episode,
+                                        resumePoint = point,
+                                    )
+                                } else {
+                                    card?.let(openCatalogItem)
+                                }
+                            },
+                            onItemLongClickIndexed = { index, _ ->
+                                val point = resumePoints.getOrNull(index)
+                                val card = resumeCards.getOrNull(index)
+                                if (point != null && card != null) {
+                                    optionTarget = HomeOptionTarget(
+                                        item = card,
+                                        season = point.season,
+                                        episode = point.episode,
+                                        resumePoint = point,
+                                    )
+                                }
+                            },
+                            progressPercent = { index, _ -> resumePoints.getOrNull(index)?.progress },
+                            isWatched = { _, item -> watchedIds.contains(item.tmdbId) },
+                            requestInitialFocus = isNormalTheme &&
+                                initialNormalFocusPending &&
+                                !isEditMode &&
+                                !hasSpotlightHero,
+                            onInitialFocusHandled = onInitialNormalFocusHandled,
+                            expandCardsOnFocus = rowCardExpansion,
+                            expandedItemKey = trailerPlayingItemKey,
+                            synchronizeCardExpansion = HubColors.hasHeroTrailer,
+                        )
+                    }
+                }
+
+                itemsIndexed(homeRows, key = { _, row -> row.listKey }) { index, row ->
+                    val rowKey = row.listKey
+                    val restoreFocus = returnFocusPending && returnFocusRowKey == rowKey
+                    val requestInitialFocus = isNormalTheme &&
+                        initialNormalFocusPending &&
+                        !isEditMode &&
+                        !hasSpotlightHero &&
+                        resumePoints.isEmpty() &&
+                        index == 0
+                    val rowFocus = remember { FocusRequester() }
+                    val trackFocus: (MediaItem) -> Unit = {
+                        viewModel.onFocused(it)
+                        lastFocusedRow = rowFocus
+                        returnFocusRowKey = rowKey
+                        lastFocusedListItemIndex = homeRowsStartIndex + index
+                        onShelfItemFocused()
+                    }
+                    // A requester whose row has left composition — edit mode
+                    // rebuilding the list, a theme change, a row deleted — no
+                    // longer points at anything, and `enter` handing that to
+                    // the focus system is not a state it tolerates. Forget it
+                    // on the way out and fall back to the default search.
+                    DisposableEffect(Unit) {
+                        onDispose { if (lastFocusedRow === rowFocus) lastFocusedRow = null }
+                    }
+                    when (row) {
+                        is HomeMediaRow.Mdblist -> {
+                            val list = row.list
+                            val itemFlow = remember(list.id) { viewModel.itemsFor(list.id) }
+                            ListRow(
+                                modifier = Modifier.animateItem(),
+                                list = list,
+                                itemFlow = itemFlow,
+                                isEditMode = isEditMode,
+                                onToggleVisibility = { viewModel.toggleListVisibility(list) },
+                                canMoveUp = index > 0,
+                                canMoveDown = index < homeRows.lastIndex,
+                                onMoveUp = { viewModel.moveRow(homeRows, index, -1) },
+                                onMoveDown = { viewModel.moveRow(homeRows, index, 1) },
+                                onRename = {
+                                    renameTarget = EditableListTarget.Mdblist(list)
+                                    renameValue = list.name
+                                },
+                                onDelete = {
+                                    deleteTarget = EditableListTarget.Mdblist(list)
+                                },
+                                onEnsure = { viewModel.ensureItems(list.id) },
+                                onItemClick = onOpenTitle,
+                                onItemLongClick = { optionTarget = HomeOptionTarget(it) },
+                                onItemFocused = trackFocus,
+                                onReachedEnd = { viewModel.loadMore(list.id) },
+                                isWatched = { _, item -> watchedIds.contains(item.tmdbId) },
+                                requestInitialFocus = requestInitialFocus,
+                                onInitialFocusHandled = onInitialNormalFocusHandled,
+                                rowFocusRequester = rowFocus,
+                                restoreFocus = restoreFocus,
+                                onFocusRestored = onReturnFocusRestored,
+                                expandCardsOnFocus = rowCardExpansion,
+                                expandedItemKey = trailerPlayingItemKey,
+                                synchronizeCardExpansion = HubColors.hasHeroTrailer,
+                            )
+                        }
+                        is HomeMediaRow.Stremio -> {
+                            val catalog = row.catalog
+                            val itemFlow = remember(catalog.addonBase, catalog.key) {
+                                viewModel.itemsForCatalog(catalog)
+                            }
+                            AddonCatalogRow(
+                                modifier = Modifier.animateItem(),
+                                catalog = catalog,
+                                itemFlow = itemFlow,
+                                isEditMode = isEditMode,
+                                onToggleVisibility = {
+                                    viewModel.toggleCatalogVisibility(catalog)
+                                },
+                                canMoveUp = index > 0,
+                                canMoveDown = index < homeRows.lastIndex,
+                                onMoveUp = { viewModel.moveRow(homeRows, index, -1) },
+                                onMoveDown = { viewModel.moveRow(homeRows, index, 1) },
+                                onRename = {
+                                    renameTarget = EditableListTarget.Stremio(catalog)
+                                    renameValue = catalog.name
+                                },
+                                onDelete = {
+                                    deleteTarget = EditableListTarget.Stremio(catalog)
+                                },
+                                onEnsure = { viewModel.ensureCatalog(catalog) },
+                                onItemClick = openCatalogItem,
+                                // A card that names an episode opens the same
+                                // options sheet "A Seguir" does, so playing
+                                // what a channel has scheduled is one press
+                                // rather than a trip through the season list.
+                                onOpenEpisode = { item, season, episode ->
+                                    optionTarget = HomeOptionTarget(
+                                        item = item,
+                                        season = season,
+                                        episode = episode,
+                                    )
+                                },
+                                onItemLongClick = { item, season, episode ->
+                                    optionTarget = HomeOptionTarget(
+                                        item = item,
+                                        season = season,
+                                        episode = episode,
+                                    )
+                                },
+                                onItemFocused = trackFocus,
+                                watchedIds = watchedIds,
+                                watchedEpisodes = watchedEpisodes,
+                                requestInitialFocus = requestInitialFocus,
+                                onInitialFocusHandled = onInitialNormalFocusHandled,
+                                rowFocusRequester = rowFocus,
+                                restoreFocus = restoreFocus,
+                                onFocusRestored = onReturnFocusRestored,
+                                expandCardsOnFocus = rowCardExpansion,
+                                expandedItemKey = trailerPlayingItemKey,
+                                synchronizeCardExpansion = HubColors.hasHeroTrailer,
+                            )
+                        }
+                        is HomeMediaRow.Feed -> {
+                            val feed = row.feed
+                            // Remembered rather than rebuilt: a fresh `List`
+                            // instance every recomposition is a fresh instance
+                            // as far as skipping is concerned, so `MediaRow`
+                            // — which takes the list as an unstable parameter —
+                            // re-ran for every row of every feed on each pass,
+                            // however unchanged the items were.
+                            val cards = remember(feed.items) { feed.items.map { it.media } }
+                            MediaRow(
+                                modifier = Modifier.animateItem(),
+                                title = feed.name,
+                                items = cards,
+                                isEditMode = isEditMode,
+                                hidden = feed.hidden,
+                                onToggleVisibility = {
+                                    viewModel.toggleFeedVisibility(feed)
+                                },
+                                canMoveUp = index > 0,
+                                canMoveDown = index < homeRows.lastIndex,
+                                onMoveUp = { viewModel.moveRow(homeRows, index, -1) },
+                                onMoveDown = { viewModel.moveRow(homeRows, index, 1) },
+                                onRename = {
+                                    renameTarget = EditableListTarget.Feed(feed)
+                                    renameValue = feed.name
+                                },
+                                onDelete = {
+                                    deleteTarget = EditableListTarget.Feed(feed)
+                                },
+                                key = { itemIndex, item ->
+                                    val feedItem = feed.items.getOrNull(itemIndex)
+                                    "${item.key}:${feedItem?.season ?: 0}:${feedItem?.episode ?: 0}"
+                                },
+                                onItemClickIndexed = { itemIndex, item ->
+                                    val feedItem = feed.items.getOrNull(itemIndex)
+                                    if (feed.key == MdblistHomeFeedKeys.UP_NEXT &&
+                                        feedItem?.season != null && feedItem.episode != null
+                                    ) {
+                                        optionTarget = HomeOptionTarget(
+                                            item = item,
+                                            season = feedItem.season,
+                                            episode = feedItem.episode,
+                                        )
+                                    } else {
+                                        openCatalogItem(item)
+                                    }
+                                },
+                                onItemLongClickIndexed = { itemIndex, item ->
+                                    val feedItem = feed.items.getOrNull(itemIndex)
+                                    optionTarget = HomeOptionTarget(
+                                        item = item,
+                                        season = feedItem?.season,
+                                        episode = feedItem?.episode,
+                                    )
+                                },
+                                isWatched = { itemIndex, item ->
+                                    val feedItem = feed.items.getOrNull(itemIndex)
+                                    if (feedItem?.season != null && feedItem.episode != null) {
+                                        watchedEpisodes.contains("${item.tmdbId}:${feedItem.season}:${feedItem.episode}")
+                                    } else {
+                                        watchedIds.contains(item.tmdbId)
+                                    }
+                                },
+                                // Only this row type carries season and
+                                // episode per card (`MdblistHomeFeedItem`,
+                                // unlike `MediaItem` itself) — "Up Next" is
+                                // built from it — so it alone reports focus
+                                // indexed, passing the matching feed entry's
+                                // episode along to the hero as a resume point.
+                                onItemFocusedIndexed = { itemIndex, focusedItem ->
+                                    viewModel.onFocused(
+                                        focusedItem,
+                                        feed.items.getOrNull(itemIndex)?.toResumePoint(),
+                                    )
+                                    lastFocusedRow = rowFocus
+                                    returnFocusRowKey = rowKey
+                                    lastFocusedListItemIndex = homeRowsStartIndex + index
+                                    onShelfItemFocused()
+                                },
+                                requestInitialFocus = requestInitialFocus,
+                                onInitialFocusHandled = onInitialNormalFocusHandled,
+                                rowFocusRequester = rowFocus,
+                                restoreFocus = restoreFocus,
+                                onFocusRestored = onReturnFocusRestored,
+                                expandCardsOnFocus = rowCardExpansion,
+                                expandedItemKey = trailerPlayingItemKey,
+                                synchronizeCardExpansion = HubColors.hasHeroTrailer,
+                            )
+                        }
+                    }
+                }
+
+                // "Porque você assistiu" — always last, since it is built from
+                // the five most recent watches rather than an MDBList row.
+                if (!isEditMode) {
+                    itemsIndexed(
+                        becauseYouWatched,
+                        key = { _, row -> "byw-${row.seedTitle}" },
+                    ) { index, row ->
+                        val bywRowKey = "byw-${row.seedTitle}"
+                        val bywRowFocus = remember { FocusRequester() }
+                        DisposableEffect(Unit) {
+                            onDispose { if (lastFocusedRow === bywRowFocus) lastFocusedRow = null }
+                        }
+                        MediaRow(
+                            modifier = Modifier.animateItem(),
+                            title = stringResource(R.string.home_because_you_watched, row.seedTitle),
+                            items = row.items,
+                            onItemClick = onOpenTitle,
+                            onItemLongClickIndexed = { _, item ->
+                                optionTarget = HomeOptionTarget(item)
+                            },
+                            onItemFocused = {
+                                viewModel.onFocused(it)
+                                lastFocusedRow = bywRowFocus
+                                returnFocusRowKey = bywRowKey
+                                lastFocusedListItemIndex = becauseYouWatchedStartIndex + index
+                                onShelfItemFocused()
+                            },
+                            rowFocusRequester = bywRowFocus,
+                            restoreFocus = returnFocusPending && returnFocusRowKey == bywRowKey,
+                            onFocusRestored = onReturnFocusRestored,
+                            isWatched = { _, item -> watchedIds.contains(item.tmdbId) },
+                            requestInitialFocus = isNormalTheme &&
+                                initialNormalFocusPending &&
+                                !hasSpotlightHero &&
+                                resumePoints.isEmpty() &&
+                                homeRows.isEmpty() &&
+                                index == 0,
+                            onInitialFocusHandled = onInitialNormalFocusHandled,
+                            expandCardsOnFocus = rowCardExpansion,
+                            expandedItemKey = trailerPlayingItemKey,
+                            synchronizeCardExpansion = HubColors.hasHeroTrailer,
+                        )
+                    }
+                }
+                }
+            }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AddonCatalogRow(
+    modifier: Modifier = Modifier,
+    catalog: AddonCatalog,
+    itemFlow: StateFlow<List<AddonCatalogItem>>,
+    isEditMode: Boolean,
+    onToggleVisibility: () -> Unit,
+    canMoveUp: Boolean,
+    canMoveDown: Boolean,
+    onMoveUp: () -> Unit,
+    onMoveDown: () -> Unit,
+    onRename: () -> Unit,
+    onDelete: () -> Unit,
+    onEnsure: () -> Unit,
+    onItemClick: (MediaItem) -> Unit,
+    onOpenEpisode: (MediaItem, Int, Int) -> Unit,
+    onItemLongClick: (MediaItem, Int?, Int?) -> Unit,
+    onItemFocused: (MediaItem) -> Unit,
+    watchedIds: Set<Int>,
+    watchedEpisodes: Set<String>,
+    requestInitialFocus: Boolean = false,
+    onInitialFocusHandled: () -> Unit = {},
+    rowFocusRequester: FocusRequester? = null,
+    restoreFocus: Boolean = false,
+    onFocusRestored: () -> Unit = {},
+    expandCardsOnFocus: Boolean = true,
+    expandedItemKey: State<String?>? = null,
+    synchronizeCardExpansion: Boolean = false,
+) {
+    val items by itemFlow.collectAsStateWithLifecycle()
+    // Remembered for the same reason the feed rows remember theirs: a fresh
+    // `List` instance on every pass is a changed parameter as far as skipping
+    // is concerned, and `MediaRow` takes the list unstably.
+    val cards = remember(items) { items.map { it.media } }
+    LaunchedEffect(catalog.addonBase, catalog.key) { onEnsure() }
+    MediaRow(
+        modifier = modifier,
+        title = catalog.name,
+        items = cards,
+        isEditMode = isEditMode,
+        hidden = catalog.hidden,
+        onToggleVisibility = onToggleVisibility,
+        canMoveUp = canMoveUp,
+        canMoveDown = canMoveDown,
+        onMoveUp = onMoveUp,
+        onMoveDown = onMoveDown,
+        onRename = onRename,
+        onDelete = onDelete,
+        // Season and episode belong in the key: a channel's running order can
+        // schedule two episodes of the same show, and without them the second
+        // card carries the first one's key.
+        key = { itemIndex, item ->
+            val entry = items.getOrNull(itemIndex)
+            "${item.key}:${entry?.season ?: 0}:${entry?.episode ?: 0}"
+        },
+        onItemClickIndexed = { itemIndex, item ->
+            val entry = items.getOrNull(itemIndex)
+            val season = entry?.season
+            val episode = entry?.episode
+            if (season != null && episode != null) {
+                onOpenEpisode(item, season, episode)
+            } else {
+                onItemClick(item)
+            }
+        },
+        onItemLongClickIndexed = { itemIndex, item ->
+            val entry = items.getOrNull(itemIndex)
+            onItemLongClick(item, entry?.season, entry?.episode)
+        },
+        onItemFocused = onItemFocused,
+        isWatched = { itemIndex, item ->
+            val entry = items.getOrNull(itemIndex)
+            if (entry?.season != null && entry.episode != null) {
+                watchedEpisodes.contains("${item.tmdbId}:${entry.season}:${entry.episode}")
+            } else {
+                watchedIds.contains(item.tmdbId)
+            }
+        },
+        requestInitialFocus = requestInitialFocus,
+        onInitialFocusHandled = onInitialFocusHandled,
+        rowFocusRequester = rowFocusRequester,
+        restoreFocus = restoreFocus,
+        onFocusRestored = onFocusRestored,
+        expandCardsOnFocus = expandCardsOnFocus,
+        expandedItemKey = expandedItemKey,
+        synchronizeCardExpansion = synchronizeCardExpansion,
+    )
+}
+
+private const val MDBLIST_CATALOG_HOST = "stremio-mdblist.baby-beamup.club"
+
+private fun catalogRowIdentity(catalog: AddonCatalog): String =
+    "${catalog.addonBase.trimEnd('/')}|${catalog.key}"
+
+/** This row's `LazyColumn` key — also what the screen saves to find the row again after a trip away. */
+private val HomeMediaRow.listKey: String
+    get() = when (this) {
+        is HomeMediaRow.Mdblist -> "mdblist-${list.id}"
+        is HomeMediaRow.Feed -> feed.key
+        is HomeMediaRow.Stremio -> "addon-catalog-${catalogRowIdentity(catalog)}"
+    }
+
+/** Returns the source MDBList id only for manifests generated by its catalog bridge. */
+private fun AddonCatalog.mdblistMirrorListId(): Long? {
+    val uri = runCatching { java.net.URI(addonBase) }.getOrNull() ?: return null
+    if (!uri.host.orEmpty().contains(MDBLIST_CATALOG_HOST, ignoreCase = true)) return null
+
+    val segments = uri.path.orEmpty().split('/').filter(String::isNotBlank)
+    val marker = segments.indexOfLast { it.equals("mdblist", ignoreCase = true) }
+    if (marker < 2) return null
+    return segments.getOrNull(marker - 2)?.toLongOrNull()
+}
+
+/**
+ * One row, collecting its own items.
+ *
+ * `LazyColumn` only collects rows near the viewport. The ViewModel retains
+ * each visited row's last Room emission, so returning upward restores its
+ * geometry immediately instead of flashing through an empty 0dp item.
+ */
+@Composable
+private fun ListRow(
+    modifier: Modifier = Modifier,
+    list: MediaList,
+    itemFlow: StateFlow<List<MediaItem>>,
+    isEditMode: Boolean = false,
+    onToggleVisibility: () -> Unit = {},
+    canMoveUp: Boolean = false,
+    canMoveDown: Boolean = false,
+    onMoveUp: () -> Unit = {},
+    onMoveDown: () -> Unit = {},
+    onRename: () -> Unit = {},
+    onDelete: () -> Unit = {},
+    onEnsure: () -> Unit,
+    onItemClick: (MediaItem) -> Unit,
+    onItemLongClick: (MediaItem) -> Unit,
+    onItemFocused: (MediaItem) -> Unit,
+    isWatched: ((Int, MediaItem) -> Boolean)? = null,
+    onReachedEnd: () -> Unit,
+    requestInitialFocus: Boolean = false,
+    onInitialFocusHandled: () -> Unit = {},
+    rowFocusRequester: FocusRequester? = null,
+    restoreFocus: Boolean = false,
+    onFocusRestored: () -> Unit = {},
+    expandCardsOnFocus: Boolean = true,
+    expandedItemKey: State<String?>? = null,
+    synchronizeCardExpansion: Boolean = false,
+) {
+    val items by itemFlow.collectAsStateWithLifecycle()
+
+    LaunchedEffect(list.id) { onEnsure() }
+
+    MediaRow(
+        modifier = modifier,
+        title = list.name,
+        items = items,
+        isEditMode = isEditMode,
+        hidden = list.hidden,
+        onToggleVisibility = onToggleVisibility,
+        canMoveUp = canMoveUp,
+        canMoveDown = canMoveDown,
+        onMoveUp = onMoveUp,
+        onMoveDown = onMoveDown,
+        onRename = onRename,
+        onDelete = onDelete,
+        onItemClick = onItemClick,
+        onItemLongClickIndexed = { _, item -> onItemLongClick(item) },
+        onItemFocused = onItemFocused,
+        isWatched = isWatched,
+        onReachedEnd = onReachedEnd,
+        requestInitialFocus = requestInitialFocus,
+        onInitialFocusHandled = onInitialFocusHandled,
+        rowFocusRequester = rowFocusRequester,
+        restoreFocus = restoreFocus,
+        onFocusRestored = onFocusRestored,
+        expandCardsOnFocus = expandCardsOnFocus,
+        expandedItemKey = expandedItemKey,
+        synchronizeCardExpansion = synchronizeCardExpansion,
+    )
+}
+
+@Composable
+private fun AutoScrollText(
+    text: String,
+    style: androidx.compose.ui.text.TextStyle,
+    color: androidx.compose.ui.graphics.Color,
+    modifier: Modifier = Modifier
+) {
+    val scrollState = androidx.compose.foundation.rememberScrollState()
+    LaunchedEffect(text) {
+        scrollState.scrollTo(0)
+        kotlinx.coroutines.delay(7000)
+        while (isActive) {
+            val max = scrollState.maxValue
+            if (max > 0) {
+                // 190ms/px, from 40 by way of 80, 120 and 150. A synopsis
+                // on a hero panel is glanced at, not studied, and every step
+                // down has been towards the same thing: the eye has to be
+                // able to leave a line and find it again on the way back.
+                // Unlike the spotlight hero's copy of this, nothing here is
+                // on a clock — the panel belongs to whatever card holds
+                // focus and stays until the viewer moves — so the pace can
+                // simply be chosen.
+                scrollState.animateScrollTo(max, animationSpec = androidx.compose.animation.core.tween(durationMillis = max * 190, easing = androidx.compose.animation.core.LinearEasing))
+                kotlinx.coroutines.delay(4000)
+                scrollState.animateScrollTo(0, animationSpec = androidx.compose.animation.core.tween(durationMillis = 800))
+                kotlinx.coroutines.delay(3000)
+            } else {
+                kotlinx.coroutines.delay(1000)
+            }
+        }
+    }
+    Text(
+        text = text,
+        style = style,
+        color = color,
+        modifier = modifier.verticalScroll(scrollState)
+    )
+}
+
+/**
+ * The full-bleed artwork, collecting the focused item's backdrop itself.
+ *
+ * Split out for the recomposition scope, not for tidiness: the URL changes
+ * every time focus settles on a different card, and read from `HomeScreen` it
+ * invalidated the whole screen for what is one `AsyncImage`.
+ */
+@Composable
+private fun FocusedBackdrop(viewModel: HomeViewModel) {
+    val url by viewModel.focusedBackdropUrl.collectAsStateWithLifecycle()
+    FanartBackdrop(url = url)
+}
+
+/**
+ * The themed hero artwork: always a backdrop, optionally a trailer.
+ *
+ * Split out for the same recomposition reason as [FocusedBackdrop] — both URLs
+ * change on every settled focus, and read from `HomeScreen` they invalidated
+ * the entire screen — but it matters more here, because an invalidation that
+ * reaches [HeroArt] would take the `AndroidView` holding a *playing*
+ * `ExoPlayer` with it.
+ */
+@Composable
+private fun HeroArtBlock(
+    viewModel: HomeViewModel,
+    target: State<HeroPanelSnapshot?>,
+    onBackdropRevealed: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    // From the gate rather than `focusedBackdropUrl`, so the picture changes
+    // exactly when the title text does — see [SettledHeroGate].
+    val backdropUrl = target.value?.backdropUrl
+    val trailerUrl by viewModel.focusedTrailerUrl.collectAsStateWithLifecycle()
+    val focused by viewModel.focused.collectAsStateWithLifecycle()
+    val miniPlayerActive by MiniPlayerCoordinator.session.collectAsStateWithLifecycle()
+
+    HeroArt(
+        backdropUrl = backdropUrl,
+        // The mini-player already has a decoder running for its own video —
+        // most Android TV boxes only have hardware for one or two concurrent
+        // ones, and this preview's bare `ExoPlayer` (see `TrailerSurface`,
+        // unlike `PlaybackController`) has no decoder-fallback handling.
+        // Contending with it is what was crashing the app rather than merely
+        // failing to preview, so this stays null for as long as any title is
+        // floating, not just the one playing there.
+        trailerUrl = trailerUrl.takeIf {
+            HubColors.hasHeroTrailer && miniPlayerActive == null
+        },
+        trailerItemKey = focused?.key,
+        onTrailerPlaybackChanged = viewModel::onTrailerPlaybackChanged,
+        onBackdropRevealed = onBackdropRevealed,
+        modifier = modifier,
+        // Aloud, the way the streaming apps this theme is named after do it:
+        // an auto-preview is meant to be a preview, and a silent one is just a
+        // moving poster.
+        muted = false,
+    )
+}
+
+/**
+ * The site's hero, collecting the rotating pick itself.
+ *
+ * Same reasoning as [FocusedBackdrop]: the item and its detail turn over on a
+ * timer, and read from `HomeScreen` that timer would invalidate the entire
+ * screen — including the row whose card currently holds focus — every sixteen
+ * seconds.
+ */
+@Composable
+private fun SpotlightHeroBlock(
+    viewModel: HomeViewModel,
+    onOpenTitle: (MediaItem) -> Unit,
+    requestInitialFocus: Boolean,
+    onInitialFocusHandled: () -> Unit,
+    primaryFocusRequester: FocusRequester,
+    modifier: Modifier = Modifier,
+) {
+    val item by viewModel.spotlightItem.collectAsStateWithLifecycle()
+    val detail by viewModel.spotlightDetail.collectAsStateWithLifecycle()
+    val language by viewModel.language.collectAsStateWithLifecycle()
+
+    SpotlightHero(
+        item = item,
+        detail = detail,
+        onOpen = onOpenTitle,
+        onNext = viewModel::nextSpotlight,
+        requestInitialFocus = requestInitialFocus,
+        onInitialFocusHandled = onInitialFocusHandled,
+        primaryFocusRequester = primaryFocusRequester,
+        language = language,
+        modifier = modifier,
+    )
+}
+
+/** Same reasoning as [FocusedBackdrop] — see the note in `HomeScreen`. */
+@Composable
+private fun HeroPanel(viewModel: HomeViewModel) {
+    val item by viewModel.focused.collectAsStateWithLifecycle()
+    val itemDetail by viewModel.focusedDetail.collectAsStateWithLifecycle()
+    val resumedEpisode by viewModel.focusedEpisode.collectAsStateWithLifecycle()
+    val language by viewModel.language.collectAsStateWithLifecycle()
+    HeroPanelContent(item, itemDetail, resumedEpisode, language)
+}
+
+/** One title's complete hero — text and backdrop — captured so the outgoing one can fade on its own data. */
+private data class HeroPanelSnapshot(
+    val item: MediaItem,
+    val detail: MediaDetail?,
+    val episode: com.mdblisthub.tv.core.model.Episode?,
+    val backdropUrl: String?,
+)
+
+/**
+ * Decides when the focused-shelf hero changes title, so that its clearlogo,
+ * text and backdrop change together, the way Prime Video's does.
+ *
+ * Left to themselves the pieces arrive at different times: the backdrop and
+ * the clearlogo are two separate downloads, both only possible once the
+ * title's detail has been fetched, and each used to fade in on its own as soon
+ * as it happened to land — so the logo trailed the art by a beat, sometimes
+ * by much more. Here nothing changes until the incoming title is whole:
+ *
+ * 1. focus has settled ([HERO_SETTLE_MS]; a held key passes cards faster),
+ * 2. the title's own detail is in (bounded by [HERO_DETAIL_WAIT_MS]),
+ * 3. its logo and backdrop are fetched *in parallel* (bounded by
+ *    [HERO_IMAGE_WAIT_MS]).
+ *
+ * Only then does [target] — what the backdrop draws — move to it. [shown] —
+ * what the text draws — follows on [HeroArt]'s own report that the new picture
+ * has started to dissolve in, so the text cannot get ahead of the art even
+ * when decoding it takes a moment longer on a slow box. The rows warm their
+ * neighbouring cards ([HomeViewModel.warmHeroNeighbors]), which is what makes
+ * all of this usually finish within the settle itself.
+ */
+@Composable
+private fun SettledHeroGate(
+    viewModel: HomeViewModel,
+    target: MutableState<HeroPanelSnapshot?>,
+    shown: MutableState<HeroPanelSnapshot?>,
+) {
+    val item by viewModel.focused.collectAsStateWithLifecycle()
+    val episode by viewModel.focusedEpisode.collectAsStateWithLifecycle()
+    val currentEpisode by rememberUpdatedState(episode)
+    val context = androidx.compose.ui.platform.LocalContext.current
+
+    LaunchedEffect(item?.key, item?.tmdbId) {
+        val focusedItem = item
+        if (focusedItem == null) {
+            target.value = null
+            shown.value = null
+            return@LaunchedEffect
+        }
+        // Nothing on screen yet means nothing to protect: no settle.
+        if (target.value != null) delay(HERO_SETTLE_MS)
+
+        suspend fun publish(detail: MediaDetail?) {
+            val backdrop = runCatching { viewModel.heroBackdropFor(focusedItem, detail) }.getOrNull()
+            withTimeoutOrNull(HERO_IMAGE_WAIT_MS) {
+                coroutineScope {
+                    listOfNotNull(detail?.logoUrl, backdrop)
+                        .map { url -> async { preloadHeroImage(context, url) } }
+                        .awaitAll()
+                }
+            }
+            val snapshot = HeroPanelSnapshot(
+                item = focusedItem,
+                detail = detail,
+                episode = currentEpisode?.takeIf(viewModel::isCurrentEpisode),
+                backdropUrl = backdrop,
+            )
+            target.value = snapshot
+            if (backdrop == null || backdrop == shown.value?.backdropUrl) {
+                // No new picture to wait for: the text can go now.
+                shown.value = snapshot
+            } else {
+                // Normally [HeroArt] reveals it first; this only covers a
+                // picture that never decodes at all.
+                launch {
+                    delay(HERO_REVEAL_FALLBACK_MS)
+                    if (target.value === snapshot && shown.value?.item?.key != focusedItem.key) {
+                        shown.value = snapshot
+                    }
+                }
+            }
+        }
+
+        val details = viewModel.heroDetail(focusedItem)
+        val first = if (focusedItem.tmdbId > 0) {
+            withTimeoutOrNull(HERO_DETAIL_WAIT_MS) { details.filterNotNull().first() }
+        } else {
+            null
+        }
+        publish(first)
+        // Later refinements of the same title — a detail that arrived after
+        // the wait, or a refreshed one — go through the same gate.
+        details.filterNotNull().collect { detail ->
+            if (detail != target.value?.detail) publish(detail)
+        }
+    }
+
+    // The resumed episode's own date lands a little later for "Continuar
+    // assistindo"; it refines the title already up rather than replacing it.
+    LaunchedEffect(episode) {
+        val current = target.value ?: return@LaunchedEffect
+        if (current.item.key != item?.key) return@LaunchedEffect
+        val matching = episode?.takeIf(viewModel::isCurrentEpisode)
+        if (matching == current.episode) return@LaunchedEffect
+        val refreshed = current.copy(episode = matching)
+        target.value = refreshed
+        if (shown.value?.item?.key == refreshed.item.key) shown.value = refreshed
+    }
+}
+
+/** Fetches and decodes [url] into Coil's caches, without drawing it anywhere. */
+private suspend fun preloadHeroImage(context: android.content.Context, url: String) {
+    @Suppress("UNUSED_VARIABLE") val unused = context
+    val screen = com.mdblisthub.desktop.DesktopScreen.sizePx()
+    val platform = coil3.PlatformContext.INSTANCE
+    SingletonImageLoader.get(platform).execute(
+        ImageRequest.Builder(platform)
+            .data(url)
+            // Never larger than the screen: fanart.tv originals can be 4K.
+            .size(screen.width, screen.height)
+            // Inexact, or Coil *upscales* a w1280 backdrop to the full 4K
+            // screen — slow, and a bitmap the hero's own `AsyncImage` (itself
+            // inexact) then can't reuse, so it decoded everything twice. This
+            // keeps the source size, which that request takes straight from
+            // the memory cache.
+            .precision(coil3.size.Precision.INEXACT)
+            .build(),
+    )
+}
+
+/**
+ * The focused-shelf hero's text: clearlogo, metadata and synopsis as one
+ * block, dissolving into the next title's in step with the backdrop behind
+ * it. When it changes is decided by [SettledHeroGate].
+ */
+@Composable
+private fun SettledHeroPanel(shown: State<HeroPanelSnapshot?>, viewModel: HomeViewModel) {
+    val language by viewModel.language.collectAsStateWithLifecycle()
+    Crossfade(
+        targetState = shown.value,
+        animationSpec = tween(HERO_PANEL_FADE_MS, easing = HubMotion.StandardEasing),
+        label = "hero-panel-title-crossfade",
+        modifier = Modifier.fillMaxSize(),
+    ) { snapshot ->
+        HeroPanelContent(snapshot?.item, snapshot?.detail, snapshot?.episode, language)
+    }
+}
+
+@Composable
+private fun HeroPanelContent(
+    item: MediaItem?,
+    itemDetail: MediaDetail?,
+    resumedEpisode: com.mdblisthub.tv.core.model.Episode? = null,
+    language: String = "en",
+) {
+    if (HubColors.isNetflixLayout || HubColors.isPrimefly) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = HubDimens.ScreenPaddingHorizontal, end = HubDimens.ScreenPaddingHorizontal, bottom = 4.dp)
+                .fillMaxHeight(),
+            verticalArrangement = Arrangement.Bottom,
+        ) {
+            if (item == null) {
+                AnimatedOpenStreamTitle(
+                    style = MaterialTheme.typography.headlineLarge,
+                )
+                return@Column
+            }
+
+            val logoUrl = itemDetail?.logoUrl
+            val logoBottomPadding = if (HubColors.isPrimefly) 4.dp else 20.dp
+            if (logoUrl != null) {
+                AsyncImage(
+                    model = logoUrl,
+                    contentDescription = item.title,
+                    contentScale = androidx.compose.ui.layout.ContentScale.Fit,
+                    modifier = Modifier
+                        .height(100.dp)
+                        // Height alone left the width to the artwork, and a
+                        // wide clearlogo — a long title set on one line — then
+                        // ran the full width of the panel and out under the
+                        // hero art. `Fit` means this only ever *caps* it: a
+                        // logo narrower than half the screen keeps its natural
+                        // size and only the offenders are scaled down.
+                        .fillMaxWidth(LOGO_MAX_WIDTH_FRACTION)
+                        .padding(bottom = logoBottomPadding),
+                    alignment = Alignment.BottomStart,
+                )
+            } else {
+                Text(
+                    text = item.title,
+                    style = MaterialTheme.typography.headlineLarge,
+                    color = HubColors.Text,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(bottom = logoBottomPadding)
+                )
+            }
+            
+            HeroMetadataRow(
+                item = item,
+                detail = itemDetail,
+                resumedEpisode = resumedEpisode,
+                language = language,
+                modifier = Modifier.padding(bottom = if (HubColors.isPrimefly) 6.dp else 12.dp),
+            )
+
+            val overview = itemDetail?.overview
+            if (overview != null) {
+                if (HubColors.isPrimefly) {
+                    AutoScrollText(
+                        text = overview,
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = HubColors.Text,
+                        // Four visible lines, then the exact same timed
+                        // vertical scroll used by the Netflixy synopsis.
+                        modifier = Modifier.fillMaxWidth(0.5f).height(96.dp),
+                    )
+                } else {
+                    AutoScrollText(
+                        text = overview,
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = HubColors.Text,
+                        modifier = Modifier.fillMaxWidth(0.5f).weight(1f, fill = false)
+                    )
+                }
+            }
+        }
+    } else {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = HubDimens.ScreenPaddingHorizontal)
+                .height(76.dp),
+            verticalArrangement = Arrangement.Bottom,
+        ) {
+            if (item == null) {
+                AnimatedOpenStreamTitle(
+                    style = MaterialTheme.typography.headlineLarge,
+                )
+                return@Column
+            }
+
+            Text(
+                text = item.title,
+                style = MaterialTheme.typography.headlineLarge,
+                color = HubColors.Text,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(Modifier.height(6.dp))
+            HeroMetadataRow(
+                item = item,
+                detail = itemDetail,
+                resumedEpisode = resumedEpisode,
+                language = language,
+            )
+        }
+    }
+}
+
+/** Exact themed order: release date • genre • duration, with theme-coloured separators. */
+@Composable
+private fun HeroMetadataRow(
+    item: MediaItem,
+    detail: MediaDetail?,
+    resumedEpisode: com.mdblisthub.tv.core.model.Episode? = null,
+    language: String = "en",
+    modifier: Modifier = Modifier,
+) {
+    // "Continuar assistindo" swaps the title-level year for the resumed
+    // episode's own air date and number — what the viewer is actually about
+    // to watch — the same substitution the web build's `app-hero` makes.
+    // Genre and runtime stay title-level either way: mdblist's episode rows
+    // carry neither, and the season's own runtime is usually close enough
+    // that repeating it here would only restate the line above.
+    val airDate = resumedEpisode?.airDate?.let { formatAirDate(it, language) }
+    val episodeCode = resumedEpisode?.let {
+        stringResource(R.string.home_episode_code, it.seasonNumber, it.episodeNumber)
+    }
+    val values = if (airDate != null && episodeCode != null) {
+        listOfNotNull(
+            airDate,
+            episodeCode,
+            item.genres.firstOrNull()?.takeIf { it.isNotBlank() }
+                ?: detail?.genres?.firstOrNull()?.takeIf { it.isNotBlank() },
+            (item.runtimeMinutes ?: detail?.runtimeMinutes)?.let { runtimeLabel(it) },
+        )
+    } else {
+        listOfNotNull(
+            detail?.releaseDate?.let { formatReleaseDate(it, language) }
+                ?: (item.year ?: detail?.year)?.toString(),
+            item.genres.firstOrNull()?.takeIf { it.isNotBlank() }
+                ?: detail?.genres?.firstOrNull()?.takeIf { it.isNotBlank() },
+            (item.runtimeMinutes ?: detail?.runtimeMinutes)?.let { runtimeLabel(it) },
+        )
+    }
+
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = modifier,
+    ) {
+        values.forEachIndexed { index, value ->
+            if (index > 0) {
+                Text(
+                    text = "•",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = if (HubColors.isPrimefly) HubColors.Accent else HubColors.NetflixRed,
+                )
+            }
+            Text(
+                text = value,
+                style = MaterialTheme.typography.titleMedium,
+                color = HubColors.TextDim,
+            )
+        }
+    }
+}
+
+/**
+ * How long the home screen may sit with no focus before the rail is handed it.
+ *
+ * A real Fire TV Stick is nowhere near an emulator on a development machine:
+ * a weak CPU decoding the first frames of a season of posters, a radio that
+ * has to actually reach mdblist over the internet rather than a loopback, and
+ * `initialSyncComplete` covers only the list *definitions* — the items each
+ * row needs still have to land after that, one `refreshItems` per row as it
+ * scrolls into view. 1.2s was tuned against the emulator and fired on real
+ * hardware on every ordinary cold start, not just the account-quota case it
+ * was written for. An mdblist account actually running dry is the exception,
+ * not the rule, so this errs long: fifteen seconds of patience for widgets
+ * that are simply slow to arrive, rather than a few flashes of "nothing to
+ * show" the viewer has to sit through before the real rows appear anyway.
+ */
+private const val FOCUS_FALLBACK_MS = 15_000L
+
+/** Long enough for the rail's width animation to give focus something to land on. */
+/** How long the home's clock stays up before auto-hide fades it out. */
+private const val HOME_CLOCK_VISIBLE_MS = 5_000L
+
+private const val RAIL_EXPAND_MS = 250L
+
+/** Steady-state cadence once real content holds focus — cheap, two boolean reads. */
+private const val POLL_MS = 1_000L
+
+/** How long a returning screen waits for its saved row before treating the visit as a fresh arrival. */
+private const val RETURN_FOCUS_TIMEOUT_MS = 2_000L
+
+private const val RESUME_ROW_KEY = "resume"
+
+
+/**
+ * The handover between the opening spotlight and the focused shelf hero.
+ *
+ * These are two *layouts*, not two pictures: with the spotlight up it is the
+ * list's own first item and the list owns the viewport, and once the rows have
+ * focus the hero is a sibling above a list shortened to a fixed strip. The
+ * swap itself therefore cannot be animated, and the previous timings existed
+ * to hide it — half a second fading to nothing, the reconfiguration in the
+ * dark, half a second fading back. That is a second of screen time spent
+ * concealing something, and concealment is what made it feel heavy.
+ *
+ * So the swap is covered rather than hidden. The spotlight leaves in
+ * [HERO_EXIT_MS] on an accelerating curve; the reconfiguration still happens
+ * at the bottom of that fade, where there is now a tenth of a second of cover
+ * instead of half of one; and the shelf hero arrives over [HERO_ENTER_MS] on a
+ * decelerating one. Both halves also travel [HERO_AXIS_SHIFT] along the axis
+ * the viewer just pressed, so the eye follows a movement through the swap and
+ * never waits on an empty screen.
+ */
+private const val HERO_EXIT_MS = 220
+
+/** The hero text's change of title; a touch quicker than the backdrop's dissolve. */
+private const val HERO_PANEL_FADE_MS = 400
+
+/**
+ * How long focus must rest on a card before the hero follows it. Key repeat
+ * passes a card every 50–100 ms, so this skips a sweep without being felt on
+ * a single press.
+ */
+private const val HERO_SETTLE_MS = 200L
+
+/** How long the outgoing title waits for the incoming one's detail before giving way. */
+private const val HERO_DETAIL_WAIT_MS = 1_500L
+
+/** How long it then waits for the logo and backdrop, fetched together. */
+private const val HERO_IMAGE_WAIT_MS = 1_200L
+
+/** Text goes anyway if the new backdrop never manages to decode. */
+private const val HERO_REVEAL_FALLBACK_MS = 1_500L
+private const val HERO_ENTER_MS = 420
+
+/**
+ * How far each half of the handover travels.
+ *
+ * Deliberately a short, fixed distance rather than anything derived from the
+ * hero's own height: displacing a block this size by its full extent is the
+ * literal definition of a heavy transition, and past roughly 30 dp the motion
+ * stops reading as the page settling and starts reading as a slide.
+ */
+private val HERO_AXIS_SHIFT = 28.dp
+
+/**
+ * How small each half of the handover starts/ends, as a fraction of full size.
+ *
+ * Paired with the existing fade and axis shift, riding the same
+ * [focusedShelfHeroAlpha] / [spotlightHeroAlpha] progress rather than a
+ * separate animation: the shelf hero grows into place as it fades in, and the
+ * spotlight settles inward as it fades out. A pure crossfade reads as static
+ * artwork switching itself off; adding this scale is what makes the handover
+ * read as one continuous piece of motion instead. Kept subtle — this is a
+ * settle, not a zoom — so it never fights the axis shift for attention.
+ */
+private const val HERO_SCALE_FROM = 0.94f
+
+/**
+ * Share of the hero's width CyberFlix gives the artwork block.
+ *
+ * The block is right-aligned and its Nuvio-style veil spends a little over
+ * half of it blending into the page, so opaque artwork stops before the title
+ * card. Its measured share stays fixed; the 20% enlargement below is a draw
+ * transform and therefore cannot remeasure or push the synopsis and rows.
+ */
+private const val HERO_ART_WIDTH_FRACTION = 0.68f
+
+/** Visual-only enlargement; [graphicsLayer] does not participate in layout. */
+private const val HERO_ART_OVERSCAN_X = 1.18f
+private const val HERO_ART_OVERSCAN_Y = 1.18f
+
+/**
+ * Ceiling on the clearlogo's width, as a share of the hero panel.
+ *
+ * A cap rather than a size: the image is drawn `Fit` and aligned to the
+ * bottom-start, so anything narrower than this is untouched and only a logo
+ * that would otherwise run under the artwork gets scaled back.
+ */
+private const val LOGO_MAX_WIDTH_FRACTION = 0.5f
+
+private fun ResumePoint.toCardItem() = MediaItem(
+    tmdbId = tmdbId ?: 0,
+    type = type,
+    title = title,
+    imdbId = imdbId,
+    posterUrl = posterUrl,
+    backdropUrl = backdropUrl,
+    score = score,
+)

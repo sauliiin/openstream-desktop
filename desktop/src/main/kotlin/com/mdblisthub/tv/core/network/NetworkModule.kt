@@ -1,0 +1,129 @@
+package com.mdblisthub.tv.core.network
+
+import android.content.Context
+import kotlinx.serialization.json.Json
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import retrofit2.Retrofit
+import retrofit2.converter.kotlinx.serialization.asConverterFactory
+import retrofit2.create
+
+/**
+ * Builds the API clients once for the process.
+ *
+ * There is no DI framework in this app: an object graph this shallow is
+ * cheaper to read as plain constructors, and skipping annotation processing
+ * for it keeps builds fast.
+ */
+class NetworkModule(context: Context) {
+
+    val json: Json = HttpClients.json
+
+    /** Shared by every metadata API, so they share one connection pool. */
+    val metadataClient: OkHttpClient by lazy { HttpClients.metadata(context.applicationContext) }
+
+    /** Short timeouts and no cache: addon hosts are third-party and flaky. */
+    val addonClient: OkHttpClient by lazy { HttpClients.addons(metadataClient) }
+
+    /** The same hosts, but for the one-off install, which may cold-start slowly. */
+    val addonInstallClient: OkHttpClient by lazy { HttpClients.addonInstall(metadataClient) }
+
+    /** What the player reads the film over — see [HttpClients.playback]. */
+    val playbackClient: OkHttpClient by lazy { HttpClients.playback(metadataClient) }
+
+    /** What Coil reads artwork over — see [HttpClients.images]. */
+    val imageClient: OkHttpClient by lazy { HttpClients.images(metadataClient) }
+
+    private val converter by lazy { json.asConverterFactory("application/json".toMediaType()) }
+
+    val mdblist: MdblistApi by lazy { retrofit(ApiConfig.MDBLIST_BASE, metadataClient).create() }
+    val tmdb: TmdbApi by lazy { retrofit(ApiConfig.TMDB_BASE, metadataClient).create() }
+    val omdb: OmdbApi by lazy { retrofit(ApiConfig.OMDB_BASE, metadataClient).create() }
+
+    /**
+     * Every call takes a full `@Url`, so the base is only there to satisfy
+     * Retrofit's constructor.
+     */
+    val stremio: StremioApi by lazy { retrofit(ApiConfig.MDBLIST_BASE, addonClient).create() }
+
+    /** Same endpoints, patient client — see [addonInstallClient]. */
+    val stremioInstall: StremioApi by lazy {
+        retrofit(ApiConfig.MDBLIST_BASE, addonInstallClient).create()
+    }
+
+    val stremioAccount: StremioAccountApi by lazy {
+        retrofit(ApiConfig.STREMIO_ACCOUNT_BASE, metadataClient).create()
+    }
+
+    /** Also `@Url`-driven; the base only has to be a valid URL. */
+    val sync: SyncApi by lazy { retrofit(ApiConfig.FIREBASE_BASE, metadataClient).create() }
+
+    /** `@Url`-driven too — a cast member's bio can come from either language edition. */
+    val wikipedia: WikipediaApi by lazy { retrofit(ApiConfig.MDBLIST_BASE, metadataClient).create() }
+
+    val imdb: ImdbApi by lazy { retrofit(ApiConfig.IMDB_GRAPHQL_BASE, metadataClient).create() }
+
+    /** OpenSubtitles.com's own API — see [ApiConfig.OPENSUBTITLES_BASE]. */
+    val openSubtitles: OpenSubtitlesApi by lazy {
+        retrofit(ApiConfig.OPENSUBTITLES_BASE, HttpClients.openSubtitles(metadataClient)).create()
+    }
+
+    /**
+     * Wyzie's own API — see [ApiConfig.WYZIE_BASE]. No dedicated client: its
+     * key travels as a query param, not a header, so there is nothing for a
+     * client-level interceptor to attach.
+     */
+    val wyzie: WyzieApi by lazy { retrofit(ApiConfig.WYZIE_BASE, metadataClient).create() }
+
+    /**
+     * On the addon client for its short timeouts: a community host the
+     * player only asks once per episode, whose answer is a nicety — a slow
+     * one should give up quickly rather than hold a socket for the episode.
+     */
+    val introDb: IntroDbApi by lazy { retrofit(ApiConfig.INTRODB_BASE, addonClient).create() }
+
+    val fanartTv: FanartTvApi by lazy {
+        retrofit(ApiConfig.FANART_TV_BASE, metadataClient).create()
+    }
+
+    /**
+     * The Trakt credential, installed by the graph once the data layer that
+     * owns it exists — the same late-binding as `DataGraph.imageWarmer`, and
+     * for the same reason: the module that holds the token is built on top of
+     * this one, not underneath it.
+     *
+     * Left unset, every Trakt call goes out without an `Authorization` header
+     * and comes back `401`. That is the correct behaviour for a build with no
+     * account linked, and the library setting keeps mdblist selected until
+     * one is.
+     */
+    @Volatile
+    var traktTokens: TraktTokens = TraktTokens.Unlinked
+
+    /** No cache and a token-refreshing authenticator — see [HttpClients.trakt]. */
+    val traktClient: OkHttpClient by lazy { HttpClients.trakt(metadataClient) { traktTokens } }
+
+    private val traktAuthClient: OkHttpClient by lazy {
+        HttpClients.traktAuth(metadataClient) { traktTokens }
+    }
+
+    val trakt: TraktApi by lazy { retrofit(ApiConfig.TRAKT_API_BASE, traktClient).create() }
+
+    /** A different host from [trakt] — see [ApiConfig.TRAKT_AUTH_BASE]. */
+    val traktAuth: TraktAuthApi by lazy {
+        retrofit(ApiConfig.TRAKT_AUTH_BASE, traktAuthClient).create()
+    }
+
+    @Volatile var simklToken: () -> String = { "" }
+    private val simklClient: OkHttpClient by lazy {
+        HttpClients.simkl(metadataClient) { simklToken() }
+    }
+    val simkl: SimklApi by lazy { retrofit(ApiConfig.SIMKL_API_BASE, simklClient).create() }
+
+    private fun retrofit(base: String, client: OkHttpClient): Retrofit =
+        Retrofit.Builder()
+            .baseUrl(base)
+            .client(client)
+            .addConverterFactory(converter)
+            .build()
+}

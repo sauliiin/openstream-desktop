@@ -6,39 +6,73 @@ on:
       - "v*.*.*"
   workflow_dispatch: {}
 
+# API keys come from repository secrets, exactly as local.properties provides
+# them locally (see README). Without them the app builds but metadata is empty.
+env:
+  TMDB_API_KEY: ${{ secrets.TMDB_API_KEY }}
+  OMDB_API_KEY: ${{ secrets.OMDB_API_KEY }}
+  FANART_TV_API_KEY: ${{ secrets.FANART_TV_API_KEY }}
+  TRAKT_CLIENT_ID: ${{ secrets.TRAKT_CLIENT_ID }}
+  TRAKT_CLIENT_SECRET: ${{ secrets.TRAKT_CLIENT_SECRET }}
+  SIMKL_CLIENT_ID: ${{ secrets.SIMKL_CLIENT_ID }}
+  OPENSUBTITLES_API_KEY: ${{ secrets.OPENSUBTITLES_API_KEY }}
+  WYZIE_API_KEY: ${{ secrets.WYZIE_API_KEY }}
+  FIREBASE_WEB_API_KEY: ${{ secrets.FIREBASE_WEB_API_KEY }}
+  GOOGLE_WEB_CLIENT_ID: ${{ secrets.GOOGLE_WEB_CLIENT_ID }}
+
 jobs:
-  build:
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-latest
-            script: dist:linux
-            artifact-glob: release/*.AppImage
-          - os: windows-latest
-            script: dist:win
-            artifact-glob: release/*.exe
-    runs-on: ${{ matrix.os }}
+  linux:
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
         with:
-          submodules: recursive
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
-      - run: npm install
-
-      - run: npm run ${{ matrix.script }}
-
+          distribution: temurin
+          java-version: 21
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Test
+        run: ./gradlew --console=plain :desktop:test
+      - name: AppImage
+        run: bash scripts/build-appimage.sh --download-tools
       - uses: actions/upload-artifact@v4
         with:
-          name: omnistream-desktop-${{ matrix.os }}
-          path: ${{ matrix.artifact-glob }}
-
-      - if: startsWith(github.ref, 'refs/tags/')
+          name: omnistream-linux
+          path: release/*.AppImage
+      # Only builds that carry the API keys are published; without the
+      # secrets the artifacts still build (and upload above) for testing.
+      - if: startsWith(github.ref, 'refs/tags/') && env.TMDB_API_KEY != ''
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ matrix.artifact-glob }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          files: release/*.AppImage
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: gradle/actions/setup-gradle@v4
+      - name: libmpv
+        shell: pwsh
+        run: |
+          # The latest libmpv developer build (shinchiro/mpv-winbuild-cmake),
+          # whose libmpv-2.dll the app loads from its resources folder.
+          $release = Invoke-RestMethod https://api.github.com/repos/shinchiro/mpv-winbuild-cmake/releases/latest
+          $asset = $release.assets | Where-Object { $_.name -like "mpv-dev-x86_64-v3-*.7z" } | Select-Object -First 1
+          if (-not $asset) { $asset = $release.assets | Where-Object { $_.name -like "mpv-dev-x86_64-*.7z" } | Select-Object -First 1 }
+          Invoke-WebRequest $asset.browser_download_url -OutFile mpv-dev.7z
+          7z e mpv-dev.7z libmpv-2.dll -odesktop/packaging/resources/windows -y
+      - name: Installer
+        run: ./gradlew --console=plain :desktop:packageReleaseExe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: omnistream-windows
+          path: desktop/build/compose/binaries/main-release/exe/*.exe
+      # Only builds that carry the API keys are published; without the
+      # secrets the artifacts still build (and upload above) for testing.
+      - if: startsWith(github.ref, 'refs/tags/') && env.TMDB_API_KEY != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          files: desktop/build/compose/binaries/main-release/exe/*.exe

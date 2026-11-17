@@ -1,0 +1,338 @@
+package com.mdblisthub.tv.ui.login
+
+import android.content.ActivityNotFoundException
+import com.mdblisthub.desktop.ui.collectIsFocusedOrHoveredAsState
+import android.content.Intent
+import androidx.core.net.toUri
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalResources
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.tv.material3.MaterialTheme
+import androidx.tv.material3.Text
+import com.mdblisthub.tv.R
+import com.mdblisthub.tv.core.data.DataGraph
+import com.mdblisthub.tv.core.ui.component.HubSpinner
+import com.mdblisthub.tv.core.ui.theme.HubColors
+import com.mdblisthub.tv.core.ui.theme.HubEffects
+import com.mdblisthub.tv.core.ui.theme.HubShapes
+import com.mdblisthub.tv.core.ui.theme.HubStrokes
+import com.mdblisthub.tv.ui.component.AnimatedOpenStreamTitle
+import com.mdblisthub.tv.ui.component.HubButton
+import com.mdblisthub.tv.ui.hubViewModel
+import kotlinx.coroutines.launch
+import com.mdblisthub.desktop.GoogleSignInLoopback
+
+@Composable
+fun LoginScreen(
+    graph: DataGraph,
+    onSignedIn: () -> Unit,
+) {
+    val viewModel = hubViewModel { LoginViewModel(graph) }
+    val state by viewModel.state.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    val resources = LocalResources.current
+    val scope = rememberCoroutineScope()
+    // Read from the composition local rather than unwrapped from the context:
+    // `MainActivity` replaces `LocalContext` with a locale-wrapped
+    // `ContextImpl`, which has no Activity anywhere in its chain.
+    val focusRequester = remember { FocusRequester() }
+
+    // Local and never persisted: it only decides which *form* this screen
+    // shows before any account exists. Once a credential is actually saved,
+    // `AuthRepository` is what remembers which mode the session is in.
+    var mdblistOnlyMode by remember { mutableStateOf(false) }
+
+    LaunchedEffect(state.signedIn) {
+        if (state.signedIn) onSignedIn()
+    }
+    LaunchedEffect(state.google, state.busy, mdblistOnlyMode) {
+        if (!state.busy) focusRequester.requestFocus()
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(
+                Brush.linearGradient(
+                    colors = listOf(
+                        HubColors.Accent.copy(alpha = 0.10f),
+                        HubColors.Background,
+                        HubColors.Background,
+                    ),
+                ),
+            )
+            .padding(horizontal = 36.dp, vertical = 24.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(14.dp, Alignment.CenterVertically),
+            modifier = Modifier
+                .fillMaxHeight(0.94f)
+                .widthIn(max = 760.dp)
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(HubShapes.Panel))
+                .background(HubColors.Surface.copy(alpha = HubEffects.GlassSurfaceAlpha))
+                .border(
+                    HubStrokes.Hairline,
+                    HubColors.Border.copy(alpha = HubEffects.SoftBorderAlpha),
+                    RoundedCornerShape(HubShapes.Panel),
+                )
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 36.dp, vertical = 28.dp),
+        ) {
+            AnimatedOpenStreamTitle(style = MaterialTheme.typography.displayLarge)
+
+            if (state.google == null && !mdblistOnlyMode) {
+                Text(
+                    text = stringResource(R.string.login_google_intro),
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = HubColors.TextDim,
+                )
+
+                if (state.busy) {
+                    HubSpinner()
+                } else {
+                    HubButton(
+                        text = stringResource(R.string.login_google_button),
+                        primary = true,
+                        modifier = Modifier.focusRequester(focusRequester),
+                        onClick = {
+                            viewModel.beginGoogleSignIn()
+                            scope.launch {
+                                try {
+                                    // Desktop: Google's account picker runs in the
+                                    // system browser, where the user is already
+                                    // signed in, and hands the ID token back over
+                                    // the loopback server — see GoogleSignInLoopback.
+                                    val idToken = GoogleSignInLoopback.requestIdToken()
+                                    viewModel.signInWithGoogle(idToken)
+                                } catch (_: GoogleSignInLoopback.Cancelled) {
+                                    viewModel.reportGoogleError(
+                                        resources.getString(R.string.login_error_cancelled),
+                                    )
+                                } catch (error: Exception) {
+                                    viewModel.reportGoogleError(
+                                        resources.getString(
+                                            R.string.login_error_open_failed,
+                                            error.message
+                                                ?: resources.getString(R.string.login_error_no_detail),
+                                        ),
+                                    )
+                                }
+                            }
+                        },
+                    )
+                    HubButton(
+                        text = stringResource(R.string.login_guest_button),
+                        onClick = viewModel::continueAsGuest,
+                    )
+                    // The Fire-TV door: no Credential Manager call happens on
+                    // this path at all, because there is usually no Google
+                    // account on the box to offer it one.
+                    HubButton(
+                        text = stringResource(R.string.login_mdblist_only_button),
+                        onClick = { mdblistOnlyMode = true },
+                    )
+                }
+            } else if (mdblistOnlyMode) {
+                Text(
+                    text = stringResource(R.string.login_mdblist_only_intro),
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = HubColors.TextDim,
+                )
+
+                if (state.busy) {
+                    HubSpinner()
+                } else {
+                    LoginKeyField(
+                        value = state.key,
+                        onValueChange = viewModel::onKeyChange,
+                        onDone = viewModel::signInWithMdblistOnly,
+                        focusRequester = focusRequester,
+                    )
+
+                    HubButton(
+                        text = stringResource(R.string.login_mdblist_only_submit),
+                        primary = true,
+                        enabled = state.key.isNotBlank(),
+                        onClick = viewModel::signInWithMdblistOnly,
+                    )
+                    HubButton(
+                        text = stringResource(R.string.login_mdblist_only_back),
+                        onClick = { mdblistOnlyMode = false },
+                    )
+                }
+            } else {
+                Text(
+                    text = stringResource(R.string.login_google_connected, state.google?.email.orEmpty()),
+                    style = MaterialTheme.typography.titleMedium,
+                    color = HubColors.Accent2,
+                )
+
+                if (state.checkingSavedKey) {
+                    Text(
+                        text = stringResource(R.string.login_checking_key),
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = HubColors.TextDim,
+                    )
+                    HubSpinner()
+                } else {
+                    Text(
+                        text = stringResource(R.string.login_mdblist_intro),
+                        style = MaterialTheme.typography.titleLarge,
+                        color = HubColors.Text,
+                    )
+                    Text(
+                        text = stringResource(R.string.login_mdblist_signup),
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = HubColors.TextDim,
+                    )
+
+                    LoginKeyField(
+                        value = state.key,
+                        onValueChange = viewModel::onKeyChange,
+                        onDone = viewModel::linkMdblist,
+                        focusRequester = focusRequester,
+                    )
+
+                    if (state.busy) {
+                        HubSpinner()
+                    } else {
+                        HubButton(
+                            text = stringResource(R.string.login_link_mdblist),
+                            primary = true,
+                            enabled = state.key.isNotBlank(),
+                            onClick = viewModel::linkMdblist,
+                        )
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            HubButton(
+                                text = stringResource(R.string.login_continue_without),
+                                onClick = viewModel::continueWithoutMdblist,
+                            )
+                            HubButton(
+                                text = stringResource(R.string.login_create_account),
+                                onClick = {
+                                    try {
+                                        context.startActivity(
+                                            Intent(Intent.ACTION_VIEW, "https://mdblist.com/".toUri())
+                                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                                        )
+                                    } catch (_: ActivityNotFoundException) {
+                                        viewModel.reportGoogleError(
+                                            resources.getString(R.string.login_error_no_browser),
+                                        )
+                                    }
+                                },
+                            )
+                        }
+                        HubButton(
+                            text = stringResource(R.string.login_change_google_account),
+                            onClick = viewModel::changeGoogleAccount,
+                        )
+                    }
+                }
+            }
+
+            // Two sources, one line: free text the screen already resolved, and
+            // a resource id the ViewModel raised without a locale to resolve it
+            // against. Resolving here is what keeps both in the selected
+            // language.
+            val error = state.error ?: state.errorRes?.let { stringResource(it) }
+            error?.let {
+                Text(it, style = MaterialTheme.typography.bodyMedium, color = HubColors.Rotten)
+            }
+        }
+    }
+}
+
+@Composable
+private fun LoginKeyField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    onDone: () -> Unit,
+    focusRequester: FocusRequester,
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val focused by interactionSource.collectIsFocusedOrHoveredAsState()
+    val borderColor by animateColorAsState(
+        targetValue = if (focused) HubColors.Accent2 else HubColors.Border,
+        label = "login-key-border",
+    )
+
+    BasicTextField(
+        value = value,
+        onValueChange = onValueChange,
+        singleLine = true,
+        textStyle = MaterialTheme.typography.titleLarge.copy(color = HubColors.Text),
+        cursorBrush = SolidColor(HubColors.Accent2),
+        interactionSource = interactionSource,
+        // The key stays visible so a mistyped character can be found with a
+        // remote before submission. It is held only by the existing state.
+        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+        keyboardActions = KeyboardActions(onDone = { onDone() }),
+        modifier = Modifier
+            .fillMaxWidth()
+            .focusRequester(focusRequester)
+            .clip(RoundedCornerShape(HubShapes.Field))
+            .background(HubColors.SurfaceStrong.copy(alpha = HubEffects.GlassSurfaceAlpha))
+            .border(
+                if (focused) HubStrokes.Focus else HubStrokes.Hairline,
+                borderColor,
+                RoundedCornerShape(HubShapes.Field),
+            )
+            .padding(horizontal = 18.dp, vertical = 16.dp),
+        decorationBox = { innerField ->
+            Box {
+                if (value.isEmpty()) {
+                    Text(
+                        stringResource(R.string.login_key_placeholder),
+                        style = MaterialTheme.typography.titleLarge,
+                        color = HubColors.TextFaint,
+                    )
+                }
+                innerField()
+            }
+        },
+    )
+}

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="desktop_update_ready">Version %1$s has been downloaded. Restart OmniStream to finish updating.</string>
+    <string name="desktop_update_restart">Restart now</string>
+    <string name="desktop_update_open_page">Version %1$s is available. Open the download page to install it.</string>
+    <string name="desktop_mpv_missing">The video player (libmpv) was not found. Install mpv with your system\'s package manager and open OmniStream again.</string>
+    <string name="desktop_fullscreen">Fullscreen</string>
+</resources>

@@ -1,119 +1,174 @@
-# OmniStream Desktop
+<p align="center">
+  <img src="desktop/packaging/icon.png" width="112" alt="Logo do OmniStream">
+</p>
 
-App de desktop do [OmniStream](https://openstream.com.br/) — mesmo site,
-empacotado com [Electron](https://www.electronjs.org/) para rodar como
-aplicativo nativo no Windows (`.exe`) e no Linux (`.AppImage`).
+<h1 align="center">OmniStream Desktop</h1>
 
-A versão 1.1 acompanha o app de TV com as aparências CyberFlix e
-OptimusPrime, Autotrailer no destaque, reset de progresso e a identidade
-OmniStream em toda a interface.
+<p align="center">
+  O app de TV do OmniStream, agora como aplicativo nativo para Linux e Windows.
+</p>
 
-O código do site fica no submódulo `web/` (repo
-[mdblist-hub](https://github.com/sauliiin/mdblist-hub)). Este repositório só
-tem a casca do Electron: ele builda o Angular do submódulo, copia o resultado
-para `app/` e empacota isso num executável. Não há duplicação do código do
-site — qualquer mudança no site é só atualizar o submódulo.
+A partir da versão 2.0, o OmniStream Desktop deixou de ser o site
+empacotado no Electron. Ele passou a ser o mesmo app nativo do
+[OmniStream para Android TV](https://github.com/sauliiin/open-Stremio), em Kotlin
+e Compose: as mesmas telas, a mesma camada de dados e a mesma navegação, rodando
+numa janela de desktop com um player nativo baseado no **mpv**.
 
-O app roda o build embutido offline (não depende do openstream.com.br estar
-no ar); só as chamadas às APIs (mdblist, TMDB, OMDb, OpenSubtitles) continuam
-precisando de internet, como no site.
+## O que vem do app de TV
 
----
+- Home cinematográfica com Spotlight, autotrailer, temas Normal, Cyberpunk,
+  Netflixy e Primefly, e cards que se expandem.
+- Biblioteca sincronizada com MDBList, Trakt ou Simkl: listas, watchlist,
+  coleção, progresso e "continuar assistindo" com a posição exata.
+- Addons compatíveis com o protocolo Stremio, com troca automática de fonte
+  quando um link falha.
+- Avaliações (IMDb, Rotten Tomatoes, Metacritic, Letterboxd, Trakt), elenco e
+  artwork localizada.
+- Pular abertura e recap via IntroDB, legendas externas com ajuste de
+  sincronia, faixas de áudio e legenda do arquivo.
+- Login com Google (sincroniza preferências e addons entre aparelhos), só com
+  a chave do MDBList, ou como convidado.
+- Interface em português, inglês, espanhol e francês.
 
-## Rodando em desenvolvimento
+## O que é próprio do desktop
+
+- **Player mpv** embutido na janela, com o OSD do app de TV desenhado por cima.
+  Toca HLS, DASH e qualquer codec de áudio (DTS, TrueHD, E-AC3) em software,
+  com decodificação de vídeo por hardware quando a GPU suporta.
+- **Teclado e mouse**: as setas funcionam como o D-pad, Enter confirma e Esc
+  volta. O mouse destaca e clica em tudo.
+- **Janela de verdade**: tela cheia, instância única (abrir de novo traz a
+  janela para a frente), notificação ao terminar um episódio e ícone na
+  barra de tarefas.
+- **Atualização automática**: o AppImage baixa a versão nova da página de
+  Releases e se substitui. No Windows, o instalador novo é baixado e aberto.
+- **Integração com o menu de aplicativos**: na primeira execução, o AppImage
+  cria a entrada `OmniStream` no menu. Para desativar, defina
+  `OMNISTREAM_NO_DESKTOP_ENTRY=1`.
+
+### Atalhos
+
+| Tecla | Ação |
+|---|---|
+| Setas | Navegar (D-pad); no player, ←/→ avançam ou voltam 10 s |
+| Enter / Espaço | Confirmar; no player, play/pause |
+| Esc / botão "voltar" do mouse | Voltar |
+| F11, Alt+Enter, `F` (no player) ou duplo clique | Tela cheia |
+| `M`, `+`/`-`, roda do mouse (no player) | Mudo e volume |
+| Ctrl+Q | Sair |
+
+## Instalação
+
+### Linux (AppImage)
+
+1. Instale o **mpv** pelo gerenciador de pacotes, se ainda não tiver. O app usa a
+   `libmpv` do sistema:
+   - Arch: `sudo pacman -S mpv`
+   - Debian/Ubuntu: `sudo apt install libmpv2`
+   - Fedora: `sudo dnf install mpv-libs`
+2. Baixe `OmniStream-<versão>-x86_64.AppImage` em
+   [Releases](https://github.com/sauliiin/openstream-desktop/releases/latest).
+3. Torne o arquivo executável (`chmod +x OmniStream-*.AppImage`) e abra-o.
+
+Se a `libmpv` não for encontrada, o app abre normalmente e mostra um aviso
+explicando o que instalar.
+
+### Windows
+
+Baixe e execute o instalador `.exe` em
+[Releases](https://github.com/sauliiin/openstream-desktop/releases/latest). Ele já
+inclui a `libmpv-2.dll`.
+
+## Compilando
+
+Requisitos: **JDK 21** e, para rodar o player, a `libmpv`.
 
 ```bash
-git clone --recurse-submodules https://github.com/sauliiin/openstream-desktop.git
-cd openstream-desktop
-npm install
-npm start        # builda o site do submódulo e abre a janela do Electron
+cp local.properties.example local.properties   # preencha as chaves de API
+./gradlew :desktop:run                          # roda o app
+./gradlew :desktop:test                         # testes
+bash scripts/build-appimage.sh                  # gera release/OmniStream-<versão>-x86_64.AppImage
 ```
 
-Se já clonou sem `--recurse-submodules`:
+O `build-appimage.sh` usa o `appimagetool` do sistema ou, se ele não existir,
+o runtime e o `mksquashfs` que o electron-builder deixa em
+`~/.cache/electron-builder`. Por padrão o script não baixa nada. Para que ele
+baixe o `appimagetool` do GitHub, use `--download-tools`.
+
+As chaves de API (TMDB, OMDb, fanart.tv, Trakt, Simkl, OpenSubtitles, Wyzie e
+Firebase) são lidas de `local.properties`, de propriedades do Gradle ou de
+variáveis de ambiente. No GitHub Actions, elas vêm dos *secrets* do repositório
+com os mesmos nomes.
+
+### Release
+
+Ao enviar uma tag `vX.Y.Z`, o workflow `.github/workflows/release.yml` gera o
+AppImage (Ubuntu) e o instalador `.exe` (Windows) e anexa os dois à Release.
+Atualize antes o `appVersion` em `desktop/build.gradle.kts`, que é a versão
+que o atualizador automático compara.
 
 ```bash
-git submodule update --init --recursive
+git tag v2.0.0 && git push origin v2.0.0
 ```
-
-## Gerando os instaladores
-
-```bash
-npm run dist:linux   # gera release/*.AppImage
-npm run dist:win     # gera release/*.exe (nsis) — precisa rodar no Windows,
-                      # ou via wine no Linux/macOS
-npm run dist         # os dois de uma vez (mesma ressalva do exe)
-```
-
-O `.exe` do Windows deve ser gerado num runner Windows (é o que o workflow de
-release faz); gerar sob Linux exige Wine e não é garantido pelo
-`electron-builder`.
-
-## Release automatizado
-
-`.github/workflows/release.yml` builda em `ubuntu-latest` (AppImage) e
-`windows-latest` (exe) e anexa os dois numa GitHub Release sempre que uma tag
-`vX.Y.Z` é enviada:
-
-```bash
-git tag v1.1.2
-git push origin v1.1.2
-```
-
-Também dá pra disparar manualmente pela aba Actions (`workflow_dispatch`).
-
-## Atualizando o site embutido
-
-```bash
-cd web
-git checkout main
-git pull
-cd ..
-git add web
-git commit -m "chore: atualiza submódulo web"
-```
-
-Isso só atualiza qual commit do mdblist-hub o app aponta — o build em si
-acontece em `npm run build:web` / `npm start` / `npm run dist:*`.
 
 ## Login com Google
 
-O botão "Sign in with your account" usa Google Identity Services
-(`google-auth.service.ts` no submódulo `web`), que só libera o fluxo para
-origens cadastradas em **Authorized JavaScript origins** do OAuth Client no
-Google Cloud Console — senão o prompt fica travado em "Connecting..." pra
-sempre, sem erro nenhum.
+O seletor de contas do Google abre no navegador do sistema, onde você já está
+logado. A página vem de um servidor local em `http://127.0.0.1:47311`, e o
+token volta para o app pela mesma porta. Essa origem precisa estar cadastrada
+uma única vez em **Authorized JavaScript origins** do OAuth Client
+`862741916290-5bhenqt1prf98341g2douaedchkqv3nb` (projeto Firebase
+`safevault-fcbdc`). É a mesma origem que a versão Electron já usava, então
+quem já fez esse cadastro não precisa repetir.
 
-Por isso `electron/server.js` serve o app numa porta fixa
-(`127.0.0.1:47311`, ver `FIXED_PORT`) em vez de uma porta aleatória — uma
-porta aleatória nunca poderia ser cadastrada. Pra esse login funcionar no
-app desktop, cadastre essa origem uma vez:
-
-1. [console.cloud.google.com](https://console.cloud.google.com/apis/credentials),
-   projeto do Firebase `safevault-fcbdc` (o mesmo do app de TV/celular).
-2. Abra o OAuth 2.0 Client ID
-   `862741916290-5bhenqt1prf98341g2douaedchkqv3nb.apps.googleusercontent.com`.
-3. Em **Authorized JavaScript origins**, adicione `http://127.0.0.1:47311`.
-4. Salve — não precisa rebuildar o app, o Google aplica na hora.
-
-Sem isso, o app ainda funciona normalmente com "Continue as Guest" ou
-colando a chave da API do mdblist direto — só a sincronização de
-preferências entre aparelhos via conta Google fica indisponível.
-
-## Estrutura
+## Como o código está organizado
 
 ```
-electron/main.js     processo principal — cria a janela e serve o app local
-electron/server.js   servidor HTTP local (loopback) com fallback de SPA
-scripts/copy-web-build.js   copia web/dist/mdblist-hub/browser -> app/
-web/                 submódulo git do site (mdblist-hub)
-build/icon.png       ícone do app (Windows e Linux)
+desktop/
+  src/main/kotlin/com/mdblisthub/tv/   código do app de TV (portado)
+  src/main/kotlin/com/mdblisthub/desktop/
+    Main.kt                 janela, grafo de objetos, tema, escala da UI
+    mpv/                    libmpv via JNA: player, renderizador, clipes
+    ui/                     teclado/mouse como controle remoto, Dialog/Popup
+    GoogleSignInLoopback.kt login com Google pelo navegador
+  src/main/kotlin/android/, androidx/, com/google/
+                            camada de compatibilidade: as APIs Android que o
+                            código de TV usa (Context, Uri, SharedPreferences,
+                            BackHandler, tv-material3, Firebase Auth via REST…)
+  res/                      res/ do app de TV, sem alterações (+ strings do desktop)
+  UPSTREAM_COMMIT           commit do app de TV com o qual o código está alinhado
+scripts/
+  build-appimage.sh         empacotamento Linux
+  sync-upstream.sh          traz mudanças novas do app de TV
 ```
 
-## Por que um servidor HTTP local em vez de `file://`?
+A interface foi desenhada para uma tela de 960×540 dp. O desktop ajusta a
+densidade para a janela ter exatamente esse tamanho em dp, então o app fica
+igual ao da TV em qualquer tamanho de janela.
 
-O build do Angular usa `<base href="/">`. Sob `file://` isso resolve os
-assets a partir da raiz do sistema de arquivos e quebra o app. Em vez de picar
-o `index.html` ou trocar a estratégia de rota, o Electron sobe um servidor
-HTTP só em `127.0.0.1` (porta aleatória, fecha junto com o app) servindo
-`app/` com fallback de SPA — o mesmo comportamento que Vercel e Cloudflare já
-fazem em produção (`vercel.json` e `wrangler.json` do site).
+### Atualizando com o app de TV
+
+```bash
+bash scripts/sync-upstream.sh            # usa ../open_Stremio/open Stremio
+./gradlew :desktop:test :desktop:run
+```
+
+O script aplica o diff do app de TV desde o `UPSTREAM_COMMIT` (código Kotlin,
+testes e `res/`) com merge de 3 vias, e por isso preserva as adaptações do
+desktop. O player e os pedaços de Media3 e WorkManager foram reescritos para
+o desktop, então mudanças nessas partes precisam ser portadas à mão.
+
+### Ferramentas de desenvolvimento
+
+- `./gradlew :desktop:snapshot -Pshots="9000:shot:home 9500:key:DOWN 10500:shot:row"`
+  roda o app sem janela e salva PNGs em `desktop/build/snapshots/`. Também
+  aceita teclas (nomes AWT: `DOWN`, `ENTER`, `ESCAPE`…).
+- `./gradlew :desktop:playerProbe -PprobeArgs="out.png <url1> <url2>"` passa o
+  `PlaybackController` real por uma cascata de fontes e mostra as fases.
+
+## Licença
+
+Este repositório usa a licença MIT (veja [LICENSE](LICENSE)). O código portado
+do app de TV vem de um repositório licenciado sob GPL-3.0.
+A `libmpv` é LGPL/GPL e é usada como biblioteca dinâmica do sistema (Linux) ou
+distribuída junto com o instalador (Windows).

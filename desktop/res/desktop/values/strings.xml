@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Strings that exist only in the desktop app. -->
+<resources>
+    <string name="desktop_update_ready">A versão %1$s foi baixada. Reinicie o OmniStream para concluir a atualização.</string>
+    <string name="desktop_update_restart">Reiniciar agora</string>
+    <string name="desktop_update_open_page">A versão %1$s está disponível. Abra a página de download para instalar.</string>
+    <string name="desktop_mpv_missing">O player de vídeo (libmpv) não foi encontrado. Instale o mpv pelo gerenciador de pacotes do seu sistema e abra o OmniStream de novo.</string>
+    <string name="desktop_fullscreen">Tela cheia</string>
+</resources>

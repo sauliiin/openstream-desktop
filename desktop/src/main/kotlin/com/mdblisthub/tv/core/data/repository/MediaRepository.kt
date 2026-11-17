@@ -1,0 +1,387 @@
+package com.mdblisthub.tv.core.data.repository
+
+import com.mdblisthub.tv.core.data.CachePolicy
+import com.mdblisthub.tv.core.data.SessionStore
+import com.mdblisthub.tv.core.data.mapper.buildDetailEntity
+import com.mdblisthub.tv.core.data.mapper.localizedFanartUrl
+import com.mdblisthub.tv.core.data.mapper.localizedPosterPath
+import com.mdblisthub.tv.core.data.mapper.localizedTitle
+import com.mdblisthub.tv.core.data.mapper.localizedTmdbLandscapeUrl
+import com.mdblisthub.tv.core.data.mapper.toDomain
+import com.mdblisthub.tv.core.data.mapper.toEntity
+import com.mdblisthub.tv.core.database.HubDatabase
+import com.mdblisthub.tv.core.model.AppError
+import com.mdblisthub.tv.core.model.Episode
+import com.mdblisthub.tv.core.model.CardArtwork
+import com.mdblisthub.tv.core.model.MediaDetail
+import com.mdblisthub.tv.core.model.MediaItem
+import com.mdblisthub.tv.core.model.MediaType
+import com.mdblisthub.tv.core.model.orFail
+import com.mdblisthub.tv.core.model.requireOrFail
+import com.mdblisthub.tv.core.model.TmdbImages
+import com.mdblisthub.tv.core.network.ApiConfig
+import com.mdblisthub.tv.core.network.FanartTvApi
+import com.mdblisthub.tv.core.network.MdblistApi
+import com.mdblisthub.tv.core.network.OmdbApi
+import com.mdblisthub.tv.core.network.TmdbApi
+import com.mdblisthub.tv.core.network.TraktApi
+import androidx.room.withTransaction
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.update
+
+/**
+ * One title, assembled from several APIs and kept in Room.
+ *
+ * `observeDetail` never touches the network — it emits the cached row, or null
+ * when there is none. `ensureDetail` is what fills it, and the workers call
+ * the same path ahead of time so that by the time someone opens a title the
+ * answer is usually already sitting in the database.
+ */
+class MediaRepository(
+    private val tmdbApi: TmdbApi,
+    private val mdblistApi: MdblistApi,
+    private val omdbApi: OmdbApi,
+    private val fanartTvApi: FanartTvApi,
+    private val traktApi: TraktApi,
+    private val session: SessionStore,
+    private val database: HubDatabase,
+) {
+    private val mediaDao = database.mediaDao()
+    private val imdbToTmdb = java.util.concurrent.ConcurrentHashMap<String, Int>()
+
+    fun observeDetail(type: MediaType, tmdbId: Int): Flow<MediaDetail?> =
+        mediaDao.observeDetail(tmdbId, type.mdblist).map { it?.toDomain() }
+
+    /**
+     * The card row, straight from Room and without ever touching the network.
+     *
+     * This exists so playback does not have to wait on [ensureDetail]. The
+     * addons are indexed by IMDb id and the decoy check needs a runtime —
+     * both of which the list sync already wrote here, for free, while the
+     * detail row costs three API calls. Null simply means the title arrived by
+     * some path that never cached a card, and the caller falls back to detail.
+     */
+    suspend fun cachedCard(type: MediaType, tmdbId: Int): MediaItem? =
+        mediaDao.card(tmdbId, type.mdblist)?.toDomain()
+
+    /** The cached detail row without subscribing, for the same reason. */
+    suspend fun cachedDetail(type: MediaType, tmdbId: Int): MediaDetail? =
+        mediaDao.detail(tmdbId, type.mdblist)?.toDomain()
+
+    /**
+     * Resolves only what a visible card needs: its title, poster and
+     * landscape art in the interface language, English as the fallback.
+     *
+     * This deliberately avoids MDBList, OMDb, cast, reviews and the rest of
+     * full detail hydration. Every composed card can call it immediately
+     * without focus turning a row of artwork into a serial metadata crawl.
+     * A detail row already chosen under the current language rules answers
+     * from Room with no request at all.
+     */
+    suspend fun resolveCardArtwork(item: MediaItem): CardArtwork {
+        val resolvedTmdbId = item.tmdbId.takeIf { it > 0 }
+            ?: item.imdbId?.let { resolveImdb(item.type, it).getOrNull() }
+            ?: return CardArtwork(landscapeUrl = item.landscapeUrl, backdropUrl = item.backdropUrl)
+
+        val cached = mediaDao.detail(resolvedTmdbId, item.type.mdblist)
+        if (cached != null && cached.fetchedAt >= LOCALIZED_ARTWORK_V1_MS) {
+            return CardArtwork(
+                landscapeUrl = cached.landscapeUrl,
+                backdropUrl = cached.backdropUrl ?: item.backdropUrl,
+                title = cached.title.takeIf { it.isNotBlank() },
+                posterUrl = TmdbImages.upscale(cached.posterUrl),
+            )
+        }
+
+        return runCatching {
+            val tmdb = tmdbApi.detail(
+                type = item.type.tmdb,
+                tmdbId = resolvedTmdbId,
+                apiKey = ApiConfig.TMDB_KEY,
+                language = ApiConfig.LANGUAGE,
+                append = ARTWORK_APPEND,
+                imageLanguage = TmdbApi.imageLanguages(),
+                videoLanguage = TmdbApi.VIDEO_LANGUAGES,
+            )
+            val tmdbLandscape = localizedTmdbLandscapeUrl(tmdb.images)
+            val fanartId = if (item.type == MediaType.SHOW) tmdb.externalIds?.tvdbId else resolvedTmdbId
+            val fanartLandscape = if (tmdbLandscape == null) {
+                fanartId?.takeIf { it > 0 }?.let { getFanartLandscapeUrl(item.type, it) }
+            } else {
+                null
+            }
+            val artwork = CardArtwork(
+                landscapeUrl = tmdbLandscape ?: fanartLandscape,
+                backdropUrl = TmdbImages.url(tmdb.backdropPath, TmdbImages.BACKDROP_FANART)
+                    ?: cached?.backdropUrl
+                    ?: item.backdropUrl,
+                title = localizedTitle(tmdb).takeIf { it.isNotBlank() },
+                posterUrl = TmdbImages.url(localizedPosterPath(tmdb), TmdbImages.POSTER_CARD),
+            )
+            mediaDao.updateArtwork(
+                resolvedTmdbId,
+                item.type.mdblist,
+                artwork.landscapeUrl,
+                artwork.backdropUrl,
+            )
+            mediaDao.updateDetailArtwork(
+                resolvedTmdbId,
+                item.type.mdblist,
+                artwork.landscapeUrl,
+                artwork.backdropUrl,
+            )
+            artwork
+        }.getOrElse {
+            CardArtwork(
+                landscapeUrl = cached?.landscapeUrl ?: item.landscapeUrl,
+                backdropUrl = cached?.backdropUrl ?: item.backdropUrl,
+            )
+        }
+    }
+
+    /**
+     * Drops everything cached in the previous interface language — titles,
+     * synopses, posters, logos and card art — so the next screen asks TMDB
+     * again in the new one.
+     */
+    suspend fun forgetLocalizedMetadata() {
+        database.withTransaction {
+            mediaDao.clearDetails()
+            mediaDao.clearEpisodes()
+            mediaDao.clearLandscapeArtwork()
+        }
+        _localeGeneration.update { it + 1 }
+    }
+
+    private val _localeGeneration = MutableStateFlow(0)
+
+    /**
+     * Bumped after [forgetLocalizedMetadata], so in-memory card caches built
+     * in the previous language know to start over.
+     */
+    val localeGeneration: StateFlow<Int> = _localeGeneration.asStateFlow()
+
+    fun observeEpisodes(showTmdbId: Int, seasonNumber: Int): Flow<List<Episode>> =
+        mediaDao.observeEpisodes(showTmdbId, seasonNumber).map { rows -> rows.map { it.toDomain() } }
+
+    suspend fun getFanartBackdropUrl(type: MediaType, tmdbId: Int): String? = runCatching {
+        val mediaTypeStr = if (type == MediaType.SHOW) "tv" else "movies"
+        val response = fanartTvApi.getArt(mediaTypeStr, tmdbId)
+        val backgrounds = if (type == MediaType.SHOW) {
+            response.showbackground
+        } else {
+            response.moviebackground
+        }
+        
+        backgrounds
+            ?.filter { it.url?.startsWith("http") == true }
+            ?.maxByOrNull { it.likes?.toIntOrNull() ?: 0 }
+            ?.url
+    }.getOrNull()
+
+    /**
+     * Artwork for a 16:9 shelf card. Fanart's `thumb` collections are authored
+     * for this exact shape. Generic Fanart backgrounds are deliberately not
+     * accepted here — they are backdrops, not card art.
+     */
+    private suspend fun getFanartLandscapeUrl(type: MediaType, fanartId: Int): String? = runCatching {
+        val mediaTypeStr = if (type == MediaType.SHOW) "tv" else "movies"
+        val response = fanartTvApi.getArt(mediaTypeStr, fanartId)
+        val thumbs = if (type == MediaType.SHOW) response.tvthumb else response.moviethumb
+        localizedFanartUrl(thumbs)
+    }.getOrNull()
+
+    /** Resolves Stremio catalog cards, which are commonly identified only by IMDb ID. */
+    suspend fun resolveImdb(type: MediaType, imdbId: String): Result<Int> = runCatching {
+        requireOrFail(imdbId.startsWith("tt", ignoreCase = true)) { AppError.InvalidImdbId }
+        val cacheKey = "${type.mdblist}:$imdbId"
+        imdbToTmdb[cacheKey]
+            ?: mediaDao.tmdbIdForImdb(imdbId, type.mdblist)
+            ?: tmdbApi.findByImdb(
+                imdbId = imdbId,
+                apiKey = ApiConfig.TMDB_KEY,
+                language = ApiConfig.LANGUAGE,
+            ).let { result ->
+                val id = if (type == MediaType.SHOW) {
+                    result.tvResults.firstOrNull()?.id
+                } else {
+                    result.movieResults.firstOrNull()?.id
+                }
+                (id?.takeIf { it > 0 }).orFail { AppError.TmdbTitleNotFound }
+            }.also { imdbToTmdb[cacheKey] = it }
+    }
+
+    /**
+     * Background warming — the prefetcher on card focus, and the worker in
+     * bulk. A degraded row is retried, but only after
+     * [CachePolicy.PARTIAL_DETAIL_MS], so sweeping the remote across a row of
+     * rate-limited titles does not turn every focus into another failed call.
+     */
+    suspend fun ensureDetail(
+        type: MediaType,
+        tmdbId: Int,
+        force: Boolean = false,
+    ): Result<Unit> = runCatching {
+        val cached = mediaDao.detail(tmdbId, type.mdblist)
+        val maxAge = if (cached?.metadataComplete == false) {
+            CachePolicy.PARTIAL_DETAIL_MS
+        } else {
+            CachePolicy.DETAIL_MS
+        }
+        if (!force && cached != null &&
+            cached.fetchedAt >= LANDSCAPE_ART_SELECTION_V2_MS &&
+            cached.fetchedAt >= TMDB_EDITORIAL_METADATA_V1_MS &&
+            cached.fetchedAt >= TRAKT_DIRECT_REVIEWS_V1_MS &&
+            cached.fetchedAt >= LOCALIZED_ARTWORK_V1_MS &&
+            !CachePolicy.isStale(cached.fetchedAt, maxAge)
+        ) {
+            return@runCatching
+        }
+        hydrate(type, tmdbId)
+    }
+
+    /**
+     * What a screen the user is actually looking at asks for.
+     *
+     * Same cache rules for a row that came back whole, but a degraded one is
+     * completed *now* rather than after the backoff above — the common way to
+     * reach a detail screen is to focus a card and press OK a second later,
+     * which is well inside that window, and waiting it out is exactly how a
+     * title ends up on screen with no ratings or reviews.
+     */
+    suspend fun ensureCompleteDetail(type: MediaType, tmdbId: Int): Result<Unit> = runCatching {
+        val cached = mediaDao.detail(tmdbId, type.mdblist)
+        if (cached != null &&
+            cached.metadataComplete &&
+            cached.fetchedAt >= LANDSCAPE_ART_SELECTION_V2_MS &&
+            cached.fetchedAt >= TMDB_EDITORIAL_METADATA_V1_MS &&
+            cached.fetchedAt >= TRAKT_DIRECT_REVIEWS_V1_MS &&
+            cached.fetchedAt >= LOCALIZED_ARTWORK_V1_MS &&
+            !CachePolicy.isStale(cached.fetchedAt, CachePolicy.DETAIL_MS)
+        ) {
+            return@runCatching
+        }
+        hydrate(type, tmdbId)
+    }
+
+    /**
+     * The expensive path, and the one the metadata worker runs in bulk.
+     *
+     * TMDB goes first because it resolves the IMDb id OMDb is keyed by;
+     * mdblist and OMDb then run together. Both are allowed to fail — a title
+     * with no aggregated ratings still has a detail screen worth showing —
+     * but the row records that they did, so the failure is retried instead of
+     * being cached as the truth for a week.
+     */
+    suspend fun hydrate(type: MediaType, tmdbId: Int) = coroutineScope {
+        val tmdb = tmdbApi.detail(
+            type = type.tmdb,
+            tmdbId = tmdbId,
+            apiKey = ApiConfig.TMDB_KEY,
+            language = ApiConfig.LANGUAGE,
+            append = TmdbApi.DETAIL_APPEND,
+            imageLanguage = TmdbApi.imageLanguages(),
+            videoLanguage = TmdbApi.VIDEO_LANGUAGES,
+        )
+
+        val imdbId = tmdb.externalIds?.imdbId
+        val apiKey = session.currentKey()
+
+        // `Result`, not `getOrNull()`: "the call failed" and "the call
+        // answered with nothing" produce the same null but mean opposite
+        // things to the cache — one is worth retrying, the other is the
+        // title's actual truth.
+        val info = async {
+            if (apiKey.isBlank()) Result.success(null)
+            // `review`, singular: mdblist answers with a `reviews` array only
+            // for that exact spelling. `reviews` or `ratings,reviews` are
+            // accepted with a 200 and simply no reviews in the body.
+            else runCatching { mdblistApi.info(type.mdblist, tmdbId, apiKey, "review") }
+        }
+        val omdb = async {
+            if (imdbId.isNullOrBlank()) Result.success(null)
+            else runCatching { omdbApi.byImdb(ApiConfig.OMDB_KEY, imdbId, "full") }
+        }
+        // Trakt's own comments, keyed by IMDb id since Trakt's id parameter
+        // takes no TMDB id. Deliberately left out of `metadataComplete`: a
+        // failure here costs nothing, mdblist's mirrored copy covers it.
+        val traktComments = async {
+            if (imdbId.isNullOrBlank() || ApiConfig.TRAKT_CLIENT_ID.isBlank()) null
+            else runCatching {
+                traktApi.comments(
+                    type = if (type == MediaType.SHOW) "shows" else "movies",
+                    id = imdbId,
+                    limit = TRAKT_COMMENTS_LIMIT,
+                )
+            }.getOrNull()
+        }
+        // Fanart.tv keys films by TMDB id, but series by TVDB id.
+        val fanartId = if (type == MediaType.SHOW) tmdb.externalIds?.tvdbId else tmdbId
+        val fanartLandscape = async {
+            fanartId?.takeIf { it > 0 }?.let { getFanartLandscapeUrl(type, it) }
+        }
+
+        val infoResult = info.await()
+        val omdbResult = omdb.await()
+
+        // A language-tagged TMDB backdrop generally carries the movie's title
+        // or campaign treatment and works as card art. Untagged imagery is a
+        // plain backdrop and therefore belongs only to the final fallback.
+        val tmdbLandscape = localizedTmdbLandscapeUrl(tmdb.images)
+
+        val entity = buildDetailEntity(
+            type = type,
+            tmdbId = tmdbId,
+            tmdb = tmdb,
+            info = infoResult.getOrNull(),
+            omdb = omdbResult.getOrNull(),
+            now = System.currentTimeMillis(),
+            metadataComplete = infoResult.isSuccess && omdbResult.isSuccess,
+            traktComments = traktComments.await(),
+        ).let { detail ->
+            // Explicit order requested by Primefly: TMDB landscape collection,
+            // Fanart.tv landscape, then the title's generic backdrop field.
+            detail.copy(landscapeUrl = tmdbLandscape ?: fanartLandscape.await())
+        }
+        mediaDao.upsertDetail(entity)
+    }
+
+    suspend fun ensureEpisodes(
+        showTmdbId: Int,
+        seasonNumber: Int,
+        force: Boolean = false,
+    ): Result<Unit> = runCatching {
+        val fetchedAt = mediaDao.episodesFetchedAt(showTmdbId, seasonNumber)
+        if (!force && !CachePolicy.isStale(fetchedAt, CachePolicy.EPISODES_MS)) return@runCatching
+
+        val now = System.currentTimeMillis()
+        val season = tmdbApi.season(showTmdbId, seasonNumber, ApiConfig.TMDB_KEY, ApiConfig.LANGUAGE)
+        mediaDao.upsertEpisodes(season.episodes.map { it.toEntity(showTmdbId, now) })
+    }
+}
+
+/** Forces pre-fix cached details to choose card artwork again exactly once. */
+private const val LANDSCAPE_ART_SELECTION_V2_MS = 1_786_478_867_150L
+/** Refreshes cached details once to source TMDB reviews and score directly. */
+private const val TMDB_EDITORIAL_METADATA_V1_MS = 1_787_356_800_000L
+/** Refreshes cached details once to source Trakt reviews from Trakt itself. */
+private const val TRAKT_DIRECT_REVIEWS_V1_MS = 1_791_244_800_000L
+/**
+ * Re-chooses logo, poster, title and card art once under the interface-
+ * language-then-English rule; older rows were picked with Portuguese and
+ * English hard-coded, whatever the interface said.
+ */
+private const val LOCALIZED_ARTWORK_V1_MS = 1_794_528_000_000L
+/**
+ * Comments fetched per title, before spoilers and one-liners are dropped.
+ * Trakt pages default to ten, which would often leave nothing after filtering.
+ */
+private const val TRAKT_COMMENTS_LIMIT = 40
+/** `translations` carries the English title fallback; see `localizedTitle`. */
+private const val ARTWORK_APPEND = "external_ids,images,translations"

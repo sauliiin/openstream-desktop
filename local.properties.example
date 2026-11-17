@@ -1,0 +1,15 @@
+# Copy to local.properties (never committed) or set as environment variables /
+# Gradle properties. The same keys the Android TV app uses, plus the two the
+# desktop's Google sign-in needs.
+TMDB_API_KEY=
+OMDB_API_KEY=
+FANART_TV_API_KEY=
+TRAKT_CLIENT_ID=
+TRAKT_CLIENT_SECRET=
+SIMKL_CLIENT_ID=
+OPENSUBTITLES_API_KEY=
+WYZIE_API_KEY=
+# Firebase Web API key of the safevault-fcbdc project (the web app's key).
+FIREBASE_WEB_API_KEY=
+# OAuth Web client used by Google Identity Services.
+GOOGLE_WEB_CLIENT_ID=862741916290-5bhenqt1prf98341g2douaedchkqv3nb.apps.googleusercontent.com

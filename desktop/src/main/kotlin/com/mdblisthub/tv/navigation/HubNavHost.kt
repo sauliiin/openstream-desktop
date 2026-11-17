@@ -1,0 +1,455 @@
+package com.mdblisthub.tv.navigation
+import androidx.activity.compose.ReportDrawnWhen
+import androidx.compose.ui.res.stringResource
+import com.mdblisthub.tv.R
+
+import android.net.Uri
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.layout.Box
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.navigation.NavType
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
+import androidx.navigation.compose.rememberNavController
+import androidx.navigation.navArgument
+import com.mdblisthub.tv.core.data.DataGraph
+import com.mdblisthub.tv.core.model.CardArtwork
+import com.mdblisthub.tv.core.model.MediaType
+import com.mdblisthub.tv.core.model.ResumePoint
+import com.mdblisthub.tv.core.ui.component.CardArtworkLoader
+import com.mdblisthub.tv.core.ui.component.LoadingScreen
+import com.mdblisthub.tv.core.ui.component.LocalCardArtworkLoader
+import com.mdblisthub.tv.core.ui.component.LocalFixedFocusFrame
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.mdblisthub.tv.core.ui.theme.HubMotion
+import com.mdblisthub.tv.ui.addons.AddonsScreen
+import com.mdblisthub.tv.ui.detail.DetailScreen
+import com.mdblisthub.tv.ui.home.HomeScreen
+import com.mdblisthub.tv.ui.login.LoginScreen
+import com.mdblisthub.tv.ui.player.MiniPlayerOverlay
+import com.mdblisthub.tv.ui.player.PlayerScreen
+import com.mdblisthub.tv.ui.search.SearchScreen
+import com.mdblisthub.tv.ui.settings.SettingsScreen
+import com.mdblisthub.tv.ui.welcome.WelcomeScreen
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+
+object Routes {
+    const val LOGIN = "login"
+    const val WELCOME = "welcome"
+    const val HOME = "home"
+    const val SEARCH = "search"
+    const val ADDONS = "addons"
+    const val SETTINGS = "settings"
+    const val DETAIL = "detail/{type}/{tmdbId}?heroBackdropUrl={heroBackdropUrl}"
+    const val PLAYER = "player/{type}/{tmdbId}?season={season}&episode={episode}&select={select}&restart={restart}"
+
+    /**
+     * [heroBackdropUrl] is the backdrop already on screen for this title —
+     * its poster row, the home hero, a search result — passed through so
+     * Detail can paint it immediately instead of sitting on a blank
+     * [LoadingScreen] until its own fetch resolves. See `DetailScreen`.
+     */
+    fun detail(type: MediaType, tmdbId: Int, heroBackdropUrl: String? = null): String {
+        val base = "detail/${type.mdblist}/$tmdbId"
+        return if (heroBackdropUrl.isNullOrBlank()) base else "$base?heroBackdropUrl=${Uri.encode(heroBackdropUrl)}"
+    }
+
+    fun player(
+        type: MediaType,
+        tmdbId: Int,
+        season: Int? = null,
+        episode: Int? = null,
+        select: Boolean = false,
+        restart: Boolean = false,
+    ) = "player/${type.mdblist}/$tmdbId?season=${season ?: -1}&episode=${episode ?: -1}" +
+        "&select=$select&restart=$restart"
+
+    /** Resume the exact movie/episode, but let the viewer choose its source first. */
+    fun resume(point: ResumePoint) =
+        player(point.type, point.tmdbId ?: 0, point.season, point.episode, select = true)
+}
+
+@Composable
+fun HubNavHost(graph: DataGraph) {
+    val navController = rememberNavController()
+
+    // Desktop: Esc/Back with no screen-level handler pops the back stack, as
+    // the system back does for NavHost on Android.
+    androidx.compose.runtime.DisposableEffect(navController) {
+        androidx.activity.compose.BackDispatcher.fallback = {
+            navController.previousBackStackEntry != null && navController.popBackStack()
+        }
+        onDispose { androidx.activity.compose.BackDispatcher.fallback = { false } }
+    }
+    val currentBackStackEntry by navController.currentBackStackEntryAsState()
+    val currentRoute = currentBackStackEntry?.destination?.route
+
+    /**
+     * Where the graph starts — decided **once**, from a snapshot, and never
+     * recomputed.
+     *
+     * This used to read `graph.auth.signedIn` as live Compose state and derive
+     * the start destination from it, which looks reasonable and is in fact the
+     * bug that made a first sign-in end on a black screen with no menu.
+     *
+     * `NavHost` keys its `NavGraph` on `startDestination` via `remember`, and
+     * hands each rebuilt graph to `NavController.setGraph`, which drops the
+     * entire back stack and re-seeds it from the new start. So the instant a
+     * login landed, one state change fired two things at once: `LoginScreen`'s
+     * `onSignedIn` running `navigate(HOME) { popUpTo(LOGIN) }`, and a graph
+     * swap caused by that same `signedIn` flipping. The swap tore down the
+     * entry the navigate had just pushed, and nothing was left to draw. Sign-out
+     * raced identically in reverse.
+     *
+     * Read once here, after `restore()` has settled, the value the graph is
+     * built from can no longer change underneath it. Every later transition is
+     * an explicit `navigate` — which is the only thing that should ever move
+     * the back stack.
+     */
+    var startDestination by remember { mutableStateOf<String?>(null) }
+
+    // A stored key is re-checked before anything routes, so every screen
+    // downstream can assume the session is real.
+    LaunchedEffect(Unit) {
+        graph.auth.restore()
+        val signedIn = graph.auth.signedIn.first()
+        val setupCompleted = graph.uiPreferences.setupCompleted.first()
+        startDestination = if (signedIn) {
+            if (setupCompleted) Routes.HOME else Routes.WELCOME
+        } else Routes.LOGIN
+    }
+
+    // Cloud reconciliation is important, but it does not decide which screen
+    // is first. Starting it after the destination has drawn keeps Firebase,
+    // Room and WorkManager off the critical first-frame path while preserving
+    // the same eventual sync behaviour for signed-in users.
+    LaunchedEffect(startDestination) {
+        val destination = startDestination
+        if (destination != Routes.HOME && destination != Routes.WELCOME) return@LaunchedEffect
+        delay(BACKGROUND_RESTORE_DELAY_MS)
+        launch { graph.listPreferencesSync.restore() }
+        launch { graph.firebaseSync.restore() }
+        launch { graph.scheduler.syncNow() }
+    }
+
+    // TTFD now means the first real destination is known and can be drawn,
+    // rather than merely the Activity's empty window becoming visible.
+    ReportDrawnWhen { startDestination != null }
+
+    val start = startDestination
+    if (start == null) {
+        LoadingScreen(message = stringResource(R.string.loading_opening))
+        return
+    }
+
+    /**
+     * One observable slot per title, rather than one observable map for all of
+     * them.
+     *
+     * This was a `mutableStateMapOf`, and the granularity is the whole point:
+     * a `SnapshotStateMap` records every read against the map as a whole, so a
+     * card reading *its own* key subscribed to every other key too. With a
+     * screenful of cards each resolving its artwork, every answer that landed
+     * invalidated every visible card — quadratic recomposition while a row
+     * was being swept.
+     *
+     * The outer map is deliberately plain: it is only ever grown, and only
+     * from the main thread — composition reads through [artworkStateFor], and
+     * the coroutines that write are dispatched to Main by
+     * [rememberCoroutineScope]. Only the per-title `MutableState` inside it is
+     * observable, so a resolved poster now recomposes the one card waiting on
+     * it.
+     *
+     * Keyed on the locale generation: a change of interface language empties
+     * the Room cache, and these per-session answers must start over with it.
+     */
+    val localeGeneration by graph.media.localeGeneration.collectAsStateWithLifecycle()
+    val artworkStates = remember(localeGeneration) { mutableMapOf<String, MutableState<CardArtwork?>>() }
+    val artworkStateFor: (String) -> MutableState<CardArtwork?> = remember(artworkStates) {
+        { key -> artworkStates.getOrPut(key) { mutableStateOf(null) } }
+    }
+    val artworkRequests = remember(localeGeneration) { mutableSetOf<String>() }
+    val artworkPermits = remember { Semaphore(16) }
+    val artworkScope = rememberCoroutineScope()
+    val artworkLoader = remember(graph, artworkScope, artworkStateFor, artworkRequests) {
+        CardArtworkLoader(
+            artworkFor = { item -> artworkStateFor(item.key).value },
+            request = { item ->
+                // All calls happen from a card effect on the main thread. The
+                // set makes recomposition and repeated shelves share one call.
+                if (artworkRequests.add(item.key)) {
+                    artworkScope.launch {
+                        val artwork = artworkPermits.withPermit {
+                            graph.media.resolveCardArtwork(item)
+                        }
+                        artworkStateFor(item.key).value = artwork
+                    }
+                }
+            },
+        )
+    }
+
+    val fixedFocusFrame by graph.uiPreferences.fixedFocusFrame
+        .collectAsStateWithLifecycle(initialValue = true)
+
+    /**
+     * Raised by anything that can leave Home's rows out of date, and cleared
+     * by Home when it reads it on its way back on screen.
+     *
+     * Home skips its account refresh on a return that follows close behind the
+     * last one (see `HomeViewModel.refreshDynamicRows`), which is right for
+     * looking at a title and coming back and wrong for everything else: the
+     * player moves progress and "watched", Settings can switch the library
+     * provider, Addons changes the catalog rows. So any destination other than
+     * a title or the search raises this — including one reached *through* a
+     * title, like the player — and so does the app going to the background,
+     * where anything at all may have happened on another device.
+     */
+    val forceHomeRefresh = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
+    LaunchedEffect(navController) {
+        navController.currentBackStackEntryFlow.collect { entry ->
+            when (entry.destination.route) {
+                Routes.HOME, Routes.DETAIL, Routes.SEARCH -> Unit
+                else -> forceHomeRefresh.set(true)
+            }
+        }
+    }
+    val activityLifecycle = LocalLifecycleOwner.current.lifecycle
+    DisposableEffect(activityLifecycle) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_STOP) forceHomeRefresh.set(true)
+        }
+        activityLifecycle.addObserver(observer)
+        onDispose { activityLifecycle.removeObserver(observer) }
+    }
+
+    CompositionLocalProvider(
+        LocalCardArtworkLoader provides artworkLoader,
+        LocalFixedFocusFrame provides fixedFocusFrame,
+    ) {
+        Box {
+            NavHost(
+                navController = navController,
+                startDestination = start,
+                // Bare `NavHost` defaults to an instant cut between screens.
+                // A shared fade is cheap insurance against that jump on every
+                // transition the more specific fixes below don't already cover
+                // (Detail's own hero continuity, the player's own transitions).
+                enterTransition = { fadeIn(tween(HubMotion.Content, easing = HubMotion.StandardEasing)) },
+                exitTransition = { fadeOut(tween(HubMotion.Content, easing = HubMotion.StandardEasing)) },
+                popEnterTransition = { fadeIn(tween(HubMotion.Content, easing = HubMotion.StandardEasing)) },
+                popExitTransition = { fadeOut(tween(HubMotion.Content, easing = HubMotion.StandardEasing)) },
+            ) {
+        composable(Routes.LOGIN) {
+            val scope = rememberCoroutineScope()
+            LoginScreen(
+                graph = graph,
+                onSignedIn = {
+                    scope.launch {
+                        val setupCompleted = graph.uiPreferences.setupCompleted.first()
+                        val destination = if (setupCompleted) Routes.HOME else Routes.WELCOME
+                        navController.navigate(destination) {
+                            popUpTo(Routes.LOGIN) { inclusive = true }
+                        }
+                    }
+                },
+            )
+        }
+
+        composable(Routes.WELCOME) {
+            WelcomeScreen(
+                graph = graph,
+                onComplete = {
+                    navController.navigate(Routes.HOME) {
+                        popUpTo(Routes.WELCOME) { inclusive = true }
+                    }
+                },
+            )
+        }
+
+        composable(Routes.HOME) {
+            HomeScreen(
+                graph = graph,
+                onOpenTitle = { item -> navController.navigate(Routes.detail(item.type, item.tmdbId, item.backdropUrl)) },
+                onOpenSearch = { navController.navigate(Routes.SEARCH) },
+                onOpenAddons = { navController.navigate(Routes.ADDONS) },
+                onOpenSettings = { navController.navigate(Routes.SETTINGS) },
+                onResume = { point ->
+                    navController.navigate(Routes.resume(point))
+                },
+                onPlay = { item, season, episode ->
+                    if (item.type == MediaType.SHOW && season == null) {
+                        navController.navigate(Routes.detail(item.type, item.tmdbId, item.backdropUrl))
+                    } else {
+                        navController.navigate(Routes.player(item.type, item.tmdbId, season, episode))
+                    }
+                },
+                onChooseSource = { item, season, episode ->
+                    if (item.type == MediaType.SHOW && season != null && episode != null) {
+                        navController.navigate(
+                            Routes.player(item.type, item.tmdbId, season, episode, select = true),
+                        )
+                    } else if (item.type == MediaType.SHOW) {
+                        navController.navigate(Routes.detail(item.type, item.tmdbId, item.backdropUrl))
+                    } else {
+                        navController.navigate(Routes.player(item.type, item.tmdbId, select = true))
+                    }
+                },
+                onSignOut = {
+                    navController.navigate(Routes.LOGIN) {
+                        popUpTo(Routes.HOME) { inclusive = true }
+                    }
+                },
+                consumeForcedRefresh = { forceHomeRefresh.getAndSet(false) },
+            )
+        }
+
+        composable(Routes.ADDONS) {
+            AddonsScreen(graph = graph, onBack = { navController.popBackStack() })
+        }
+
+        composable(Routes.SETTINGS) {
+            SettingsScreen(graph = graph, onBack = { navController.popBackStack() })
+        }
+
+        composable(Routes.SEARCH) {
+            SearchScreen(
+                graph = graph,
+                onOpenTitle = { item -> navController.navigate(Routes.detail(item.type, item.tmdbId, item.backdropUrl)) },
+                onPlay = { item ->
+                    if (item.type == MediaType.SHOW) {
+                        navController.navigate(Routes.detail(item.type, item.tmdbId, item.backdropUrl))
+                    } else {
+                        navController.navigate(Routes.player(item.type, item.tmdbId))
+                    }
+                },
+                onChooseSource = { item ->
+                    if (item.type == MediaType.SHOW) {
+                        navController.navigate(Routes.detail(item.type, item.tmdbId, item.backdropUrl))
+                    } else {
+                        navController.navigate(Routes.player(item.type, item.tmdbId, select = true))
+                    }
+                },
+            )
+        }
+
+        composable(
+            route = Routes.DETAIL,
+            arguments = listOf(
+                navArgument("type") { type = NavType.StringType },
+                navArgument("tmdbId") { type = NavType.IntType },
+                navArgument("heroBackdropUrl") {
+                    type = NavType.StringType
+                    nullable = true
+                    defaultValue = null
+                },
+            ),
+        ) { entry ->
+            val type = MediaType.parse(entry.arguments?.getString("type"))
+            val tmdbId = entry.arguments?.getInt("tmdbId") ?: 0
+            val heroBackdropUrl = entry.arguments?.getString("heroBackdropUrl")?.takeIf { it.isNotBlank() }
+
+            DetailScreen(
+                graph = graph,
+                type = type,
+                tmdbId = tmdbId,
+                heroBackdropUrl = heroBackdropUrl,
+                onBack = { navController.popBackStack() },
+                onPlay = { season, episode ->
+                    navController.navigate(Routes.player(type, tmdbId, season, episode))
+                },
+                onPlayFromBeginning = { season, episode ->
+                    navController.navigate(
+                        Routes.player(type, tmdbId, season, episode, restart = true),
+                    )
+                },
+                onSelectSource = { season, episode ->
+                    navController.navigate(Routes.player(type, tmdbId, season, episode, select = true))
+                },
+                onOpenTitle = { item -> navController.navigate(Routes.detail(item.type, item.tmdbId, item.backdropUrl)) },
+                onPlayItem = { item ->
+                    if (item.type == MediaType.SHOW) {
+                        navController.navigate(Routes.detail(item.type, item.tmdbId, item.backdropUrl))
+                    } else {
+                        navController.navigate(Routes.player(item.type, item.tmdbId))
+                    }
+                },
+                onChooseSourceForItem = { item ->
+                    if (item.type == MediaType.SHOW) {
+                        navController.navigate(Routes.detail(item.type, item.tmdbId, item.backdropUrl))
+                    } else {
+                        navController.navigate(Routes.player(item.type, item.tmdbId, select = true))
+                    }
+                },
+            )
+        }
+
+        composable(
+            route = Routes.PLAYER,
+            arguments = listOf(
+                navArgument("type") { type = NavType.StringType },
+                navArgument("tmdbId") { type = NavType.IntType },
+                navArgument("season") { type = NavType.IntType; defaultValue = -1 },
+                navArgument("episode") { type = NavType.IntType; defaultValue = -1 },
+                navArgument("select") { type = NavType.BoolType; defaultValue = false },
+                navArgument("restart") { type = NavType.BoolType; defaultValue = false },
+            ),
+        ) { entry ->
+            val args = entry.arguments
+            val playerType = MediaType.parse(args?.getString("type"))
+            val playerTmdbId = args?.getInt("tmdbId") ?: 0
+            PlayerScreen(
+                graph = graph,
+                type = playerType,
+                tmdbId = playerTmdbId,
+                season = args?.getInt("season")?.takeIf { it > 0 },
+                episode = args?.getInt("episode")?.takeIf { it > 0 },
+                manualSelect = args?.getBoolean("select") ?: false,
+                startFromBeginning = args?.getBoolean("restart") ?: false,
+                onBack = { navController.popBackStack() },
+                onOpenAddons = { navController.navigate(Routes.ADDONS) },
+                onPlayNextEpisode = { nextSeason, nextEpisode ->
+                    navController.navigate(
+                        Routes.player(playerType, playerTmdbId, nextSeason, nextEpisode),
+                    ) {
+                        popUpTo(entry.destination.id) { inclusive = true }
+                        launchSingleTop = true
+                    }
+                },
+            )
+        }
+            }
+
+            // The controller survives the player route when playback is
+            // minimized. Hosting this once above the NavHost makes that live
+            // session visible on Home, Search, Details and Settings, while
+            // the route guard inside the overlay keeps it out of fullscreen.
+            MiniPlayerOverlay(
+                graph = graph,
+                navController = navController,
+                currentRoute = currentRoute,
+            )
+        }
+    }
+}
+
+private const val BACKGROUND_RESTORE_DELAY_MS = 1_500L

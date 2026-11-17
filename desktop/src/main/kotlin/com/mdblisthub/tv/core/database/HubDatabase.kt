@@ -1,0 +1,98 @@
+package com.mdblisthub.tv.core.database
+
+import android.content.Context
+import androidx.room.Database
+import androidx.room.Room
+import androidx.room.RoomDatabase
+import androidx.room.TypeConverters
+import androidx.room.withTransaction
+import androidx.sqlite.driver.bundled.BundledSQLiteDriver
+import kotlinx.coroutines.Dispatchers
+import com.mdblisthub.tv.core.database.dao.AddonDao
+import com.mdblisthub.tv.core.database.dao.ListDao
+import com.mdblisthub.tv.core.database.dao.MediaDao
+import com.mdblisthub.tv.core.database.dao.PlaybackDao
+import com.mdblisthub.tv.core.database.entity.AddonEntity
+import com.mdblisthub.tv.core.database.entity.EpisodeEntity
+import com.mdblisthub.tv.core.database.entity.LibraryEntity
+import com.mdblisthub.tv.core.database.entity.ListEntity
+import com.mdblisthub.tv.core.database.entity.ListItemEntity
+import com.mdblisthub.tv.core.database.entity.MediaDetailEntity
+import com.mdblisthub.tv.core.database.entity.MediaEntity
+import com.mdblisthub.tv.core.database.entity.PlaybackHintEntity
+import com.mdblisthub.tv.core.database.entity.ResumeEntity
+import com.mdblisthub.tv.core.database.entity.WatchedEpisodeEntity
+
+@Database(
+    entities = [
+        MediaEntity::class,
+        MediaDetailEntity::class,
+        ListEntity::class,
+        ListItemEntity::class,
+        EpisodeEntity::class,
+        AddonEntity::class,
+        ResumeEntity::class,
+        PlaybackHintEntity::class,
+        LibraryEntity::class,
+        WatchedEpisodeEntity::class,
+    ],
+    // 10 adds the provider-side session id to `resume_points`, which is how a
+    // Trakt paused session is dropped. Destructive migration is correct here
+    // for the same reason as always — every table is a cache with an upstream
+    // source of truth — and re-syncing is cheaper than the two full table
+    // scans the missing indices cost.
+    // 12 adds `playback_hints`, this app's own note of where a title was left
+    // and which release it was left on. Destructive migration stays correct:
+    // the table is a speed cache, not a source of truth, and losing it costs
+    // one resume that falls back to the provider's percentage.
+    version = 12,
+    exportSchema = true,
+)
+@TypeConverters(Converters::class)
+abstract class HubDatabase : RoomDatabase() {
+
+    abstract fun mediaDao(): MediaDao
+    abstract fun listDao(): ListDao
+    abstract fun addonDao(): AddonDao
+    abstract fun playbackDao(): PlaybackDao
+
+    /**
+     * Clears only data owned by the linked MDBList account. Addons are owned
+     * by the Google/Firebase session and must survive replacing an MDBList API
+     * key under that same Google account.
+     */
+    suspend fun clearMdblistAccountData() = withTransaction {
+        listDao().clearAllItems()
+        listDao().clearLists()
+        mediaDao().clearEpisodes()
+        mediaDao().clearDetails()
+        mediaDao().clearMedia()
+        playbackDao().clearResumePoints()
+        playbackDao().clearPlaybackHints()
+        playbackDao().clearLibrary()
+        playbackDao().clearWatchedEpisodes()
+    }
+
+    /**
+     * Room's `clearAllTables`, which the JVM runtime does not have. Same effect:
+     * every row of every table, in one transaction.
+     */
+    suspend fun clearAllTables() = withTransaction {
+        clearMdblistAccountData()
+        addonDao().clear()
+    }
+
+    companion object {
+        private const val NAME = "mdblist-hub.db"
+
+        fun create(context: Context): HubDatabase =
+            Room.databaseBuilder<HubDatabase>(name = context.getDatabasePath(NAME).absolutePath)
+                .setDriver(BundledSQLiteDriver())
+                .setQueryCoroutineContext(Dispatchers.IO)
+                // Everything in here is a cache with an upstream source of
+                // truth, so throwing it away and re-syncing is a correct
+                // migration for as long as that stays true.
+                .fallbackToDestructiveMigration(dropAllTables = true)
+                .build()
+    }
+}
